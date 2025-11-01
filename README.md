@@ -4,276 +4,50 @@ A modular, configurable PyTorch-based surrogate model for predicting chemical de
 
 ## Overview
 
-This project implements a flexible MLP-based surrogate model with the following features:
+This project implements multiple deep learning architectures for chemical density prediction with the following features:
 
-- **Configurable Architecture**: Control number of layers, hidden dimensions, and activation functions
-- **SwiGLU Activation**: State-of-the-art gated linear unit activation (default) or simple Swish
-- **Residual Connections**: Automatic residual connections for multi-layer networks (num_layers > 1)
+- **Multiple Architectures**: Support for MLP, CNN, Multi-Scale CNN, and Graph Neural Networks (GNN)
+- **Architecture-Agnostic Framework**: Unified training pipeline supporting all models
+- **Configuration-Based Selection**: Switch architectures via `config.py` or CLI arguments
+- **Comprehensive Benchmarking**: Compare all architectures with detailed metrics and visualizations
 - **Full CUDA Support**: Seamless GPU acceleration with PyTorch
-- **Modular Design**: Easy to extend and modify for other applications
+- **Modular Design**: Easy to extend with new architectures and components
 
 ## Project Structure
 
 ```
 .
-├── config.py                  # Configuration classes
-├── activation.py              # Activation functions (Swish, SwiGLU)
-├── model.py                   # Core model architecture
-├── data_loader.py             # Data loading and preprocessing
-├── trainer.py                 # Training utilities
-├── train.py                   # Main training script
-├── examples.py                # Usage examples
-├── README.md                  # This file
-├── Dataset_1.csv              # Training data
-├── Dataset_2.csv              # Training data
-├── Dataset_3.csv              # Training data
-├── Dataset_4.csv              # Training data
-└── results/                   # Output directory (created automatically)
-    ├── checkpoints/           # Model checkpoints
-    ├── model_config.json      # Model configuration
-    ├── training_config.json   # Training configuration
-    ├── normalization_stats.json # Data normalization statistics
-    ├── training_history.json  # Training loss history
-    ├── test_results.json      # Test metrics
-    └── predictions.pt         # Test predictions
+├── config.py                          # Configuration classes for all architectures
+├── activation.py                      # Activation functions (Swish, SwiGLU)
+├── model.py                           # Core model architectures
+├── models/
+│   ├── mlp.py                         # Multi-Layer Perceptron architecture
+│   ├── cnn.py                         # Convolutional Neural Network
+│   ├── cnn_multiscale.py              # Multi-Scale CNN with residual connections
+│   └── gnn.py                         # Graph Neural Network (GAT/GCN)
+├── data_loader.py                     # Data loading and preprocessing
+├── trainer.py                         # Training utilities and loop
+├── train.py                           # Main training script (architecture-agnostic)
+├── benchmark_all_architectures.py     # Multi-architecture benchmarking script
+├── analyze_data_ranges.py             # Data analysis utility
+├── analyze_rmse.py                    # RMSE interpretation and metrics
+├── PERFORMANCE_ANALYSIS.md            # Detailed performance documentation
+├── examples.py                        # Usage examples
+├── README.md                          # This file
+├── Dataset_1.csv                      # Training data
+├── Dataset_2.csv                      # Training data
+├── Dataset_3.csv                      # Training data
+├── Dataset_4.csv                      # Training data
+├── results_mlp/                       # Output directory for MLP (created automatically)
+├── results_cnn/                       # Output directory for CNN (created automatically)
+├── results_cnn_multiscale/            # Output directory for Multi-Scale CNN (created automatically)
+├── results_gnn/                       # Output directory for GNN (created automatically)
+├── benchmark_results.png              # Comparative benchmark visualization
+├── benchmark_results.json             # Benchmark metrics in JSON format
+└── .gitignore
 ```
 
-## Architecture
-
-### Model Components
-
-**Input Layer**: 4 features
-
-- SigC (sigma carbon)
-- SigH (sigma hydrogen)
-- EpsC (epsilon carbon)
-- EpsH (epsilon hydrogen)
-
-**Hidden Layers**: Configurable number of MLP blocks
-
-- Default: 1 layer
-- Each block can use SwiGLU or Swish activation
-- Residual connections connect consecutive layers (when num_layers > 1)
-
-**Output Layer**: Single neuron predicting density
-
-### Example Configurations
-
-#### Default (Single Layer, SwiGLU)
-
-```python
-config = ModelConfig(
-    num_layers=1,           # Single hidden layer
-    expansion_factor=100,   # 4 * 100 = 400 hidden units
-    use_swiglu=True,        # SwiGLU activation
-)
-```
-
-#### Multi-Layer with Residuals
-
-```python
-config = ModelConfig(
-    num_layers=3,           # 3 hidden layers with residuals
-    expansion_factor=100,
-    use_swiglu=True,
-)
-```
-
-#### Swish Activation Only
-
-```python
-config = ModelConfig(
-    num_layers=2,
-    expansion_factor=100,
-    use_swiglu=False,       # Use Swish instead of SwiGLU
-)
-```
-
-## Usage
-
-### 1. Basic Model Creation
-
-```python
-from config import ModelConfig
-from model import ChemicalDensitySurrogate
-
-# Create configuration
-config = ModelConfig(
-    num_layers=1,
-    expansion_factor=100,
-    use_swiglu=True,
-)
-
-# Create model
-model = ChemicalDensitySurrogate(config)
-
-# Print model info
-print(model.get_model_info())
-```
-
-### 2. Making Predictions
-
-```python
-import torch
-
-# Create sample input: batch_size=8, features=4
-input_features = torch.randn(8, 4)
-
-# Forward pass
-densities = model(input_features)  # Shape: (8, 1)
-```
-
-### 3. Training
-
-#### Quick Start
-
-```bash
-python train.py
-```
-
-#### Custom Configuration
-
-```bash
-python train.py \
-    --num-layers 2 \
-    --expansion-factor 100 \
-    --epochs 200 \
-    --batch-size 32 \
-    --learning-rate 0.001 \
-    --optimizer adam \
-    --loss mse \
-    --device cuda
-```
-
-#### Available Arguments
-
-**Model Configuration**:
-
-- `--num-layers`: Number of hidden layers (default: 1)
-- `--expansion-factor`: Hidden dimension multiplier (default: 100)
-- `--use-swiglu`: Use SwiGLU activation (default flag)
-- `--use-swish`: Use Swish activation instead of SwiGLU
-
-**Training Configuration**:
-
-- `--epochs`: Number of training epochs (default: 100)
-- `--batch-size`: Batch size (default: 64)
-- `--learning-rate`: Learning rate (default: 0.001)
-- `--optimizer`: adam or sgd (default: adam)
-- `--loss`: mse or mae (default: mse)
-
-**Data Configuration**:
-
-- `--data-dir`: Directory containing CSV files (default: current directory)
-- `--val-split`: Validation split ratio (default: 0.2)
-- `--test-split`: Test split ratio (default: 0.1)
-- `--no-normalize`: Disable input/target normalization
-
-**General**:
-
-- `--device`: cuda or cpu (auto-detected by default)
-- `--seed`: Random seed (default: 42)
-- `--output-dir`: Results directory (default: ./results)
-
-### 4. Examples
-
-Run all example scripts:
-
-```bash
-python examples.py
-```
-
-This demonstrates:
-
-1. Basic model creation and forward pass
-2. Model with Swish activation
-3. Multi-layer model with residuals
-4. Comparing different expansion factors
-5. CUDA device placement
-6. Batch predictions
-
-## Configuration Files
-
-### ModelConfig
-
-```python
-@dataclass
-class ModelConfig:
-    input_dim: int = 4                  # Fixed at 4 features
-    output_dim: int = 1                 # Single density output
-    num_layers: int = 1                 # Number of hidden layers
-    expansion_factor: float = 100       # Multiplier for hidden dimension
-    use_swiglu: bool = True             # SwiGLU vs Swish activation
-    device: str = "cuda"                # Device placement
-    dtype: str = "float32"              # Data type
-```
-
-### TrainingConfig
-
-```python
-@dataclass
-class TrainingConfig:
-    learning_rate: float = 0.001
-    batch_size: int = 64
-    num_epochs: int = 100
-    validation_split: float = 0.2
-    test_split: float = 0.1
-    random_seed: int = 42
-    loss_fn: str = "mse"                # mse or mae
-    optimizer: str = "adam"             # adam or sgd
-    normalize_inputs: bool = True
-    normalize_outputs: bool = True
-    save_best_model: bool = True
-    checkpoint_dir: str = "./checkpoints"
-```
-
-## Activation Functions
-
-### Swish
-
-Simple smooth activation function:
-$$\text{Swish}(x) = x \cdot \sigma(x)$$
-
-### SwiGLU
-
-Gated linear unit with Swish activation:
-$$\text{SwiGLU}(x) = (x \cdot W + b) \odot \text{Swish}(x \cdot V + c)$$
-
-Where $\odot$ denotes element-wise multiplication.
-
-**References**: "GLU Variants Improve Transformer" (Shazeer et al., 2020)
-
-## Data Format
-
-The model expects CSV files with the following structure:
-
-```
-,Feature1,Feature2,...,FeatureN
-SigC,value1,value2,...,valueN
-SigH,value1,value2,...,valueN
-EpsC,value1,value2,...,valueN
-EpsH,value1,value2,...,valueN
-Density,value1,value2,...,valueN
-```
-
-Each column (except the first) represents a sample with 4 input features and 1 target (density).
-
-## Training Process
-
-1. **Data Loading**: Loads all Dataset\_\*.csv files, combines them, and splits into train/val/test sets
-2. **Normalization**: Optionally normalizes features and targets to zero mean and unit variance
-3. **Model Creation**: Instantiates the surrogate model with specified configuration
-4. **Training Loop**:
-   - For each epoch:
-     - Train on training set with backpropagation
-     - Validate on validation set
-     - Save best model based on validation loss
-5. **Testing**: Evaluate final model on held-out test set
-6. **Results**: Save model, configurations, predictions, and training history
-
-## Output Files
-
-After training, the `results/` directory contains:
+Each results directory contains:
 
 - `best_model.pt` - Best model weights and configuration
 - `model_config.json` - Model architecture configuration
@@ -282,98 +56,637 @@ After training, the `results/` directory contains:
 - `training_history.json` - Loss history for train/val sets
 - `test_results.json` - Test set metrics
 - `predictions.pt` - Model predictions and targets on test set
-- `checkpoints/` - Periodic checkpoints during training
 
-## Performance Considerations
+## Installation & Setup
 
-### Model Size
+### Prerequisites
 
-- **Expansion Factor 50**: ~200 parameters (1 layer)
-- **Expansion Factor 100**: ~400 parameters (1 layer) ← **Recommended for default**
-- **Expansion Factor 200**: ~800 parameters (1 layer)
-
-### Computation
-
-- **Single Layer**: Very fast, suitable for real-time predictions
-- **Multi-Layer with Residuals**: ~2-3x slower per layer, better expressiveness
-- **SwiGLU vs Swish**: SwiGLU ~2x more parameters due to gating mechanism
-
-### Memory
-
-- **Batch Size 64**: ~1 MB (GPU memory)
-- **Batch Size 256**: ~4 MB (GPU memory)
-
-## Requirements
-
-- PyTorch >= 1.9.0
-- CUDA 11.x or higher (for GPU acceleration)
-- NumPy
-- Pandas
 - Python 3.8+
+- Git
+- CUDA 11.x or higher (optional, for GPU acceleration)
 
-## Installation
+### Step 1: Clone Repository
 
 ```bash
-# Install PyTorch with CUDA support
+git clone https://github.com/Projekt-zur-Datenanalyse/density.git
+cd density
+```
+
+### Step 2: Create Virtual Environment
+
+#### On Windows (PowerShell)
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+```
+
+#### On macOS/Linux
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+### Step 3: Install Dependencies
+
+```bash
+# Upgrade pip
+pip install --upgrade pip
+
+# Install PyTorch with CUDA support (GPU acceleration)
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
 
-# Install dependencies
-pip install numpy pandas
+# Alternative: Install PyTorch CPU-only (if you don't have CUDA)
+# pip install torch torchvision torchaudio
+
+# Install other dependencies
+pip install numpy pandas matplotlib scikit-learn
 ```
 
-## Extending the Model
+### Step 4: Verify Installation
 
-### Adding Custom Activation Functions
+```bash
+python -c "import torch; print(f'PyTorch version: {torch.__version__}'); print(f'CUDA available: {torch.cuda.is_available()}')"
+```
 
-1. Create a new class in `activation.py`:
+## Architecture Overview
+
+This project supports four distinct deep learning architectures for density prediction:
+
+### 1. Multi-Layer Perceptron (MLP)
+
+**Description**: Traditional feed-forward neural network with fully connected layers.
+
+**Key Features**:
+
+- Simple and fast
+- Good baseline for comparison
+- Configurable number of layers and hidden dimensions
+- Optional SwiGLU gating mechanism
+
+**Best for**: Quick prototyping, low-latency inference
+
+**Configuration**:
 
 ```python
-class CustomActivation(nn.Module):
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Your activation logic
-        return x
+architecture: "mlp"
+num_layers: 1
+expansion_factor: 8  # Hidden dim = 4 * 8 = 32
+use_swiglu: true
 ```
 
-2. Update `MLPBlock` to support it
+### 2. Convolutional Neural Network (CNN)
 
-### Custom Model Architectures
+**Description**: 1D convolutional layers designed to capture local feature patterns.
 
-Inherit from the base model:
+**Key Features**:
+
+- Efficient feature extraction via convolutions
+- Configurable kernel size and number of layers
+- Batch normalization support
+- Optional residual connections
+
+**Best for**: Capturing local correlations between features
+
+**Configuration**:
 
 ```python
-class CustomDensityModel(ChemicalDensitySurrogate):
-    def _build_network(self):
-        # Your custom layer structure
-        pass
+architecture: "cnn"
+cnn_num_layers: 4
+cnn_kernel_size: 3
+cnn_expansion_size: 8
+cnn_use_batch_norm: true
+cnn_use_residual: false
 ```
 
-### Adding Regularization
+### 3. Multi-Scale CNN
 
-Modify `MLPBlock` to add dropout or other regularization techniques.
+**Description**: CNN with multiple parallel branches operating at different scales, combined via late fusion.
 
-## Troubleshooting
+**Key Features**:
 
-### Out of Memory
+- Multi-resolution feature extraction
+- Parallel processing of multiple kernel sizes (3, 5, 7)
+- Residual connections between scales
+- Batch normalization
+- More expressive than single-scale CNN
 
-- Reduce `--batch-size`
-- Reduce `--expansion-factor`
-- Use `--device cpu` (slower but less memory)
+**Best for**: Complex feature interactions at multiple scales
 
-### Poor Performance
+**Configuration**:
 
-- Increase `--epochs`
-- Adjust `--learning-rate`
-- Try `--optimizer sgd`
-- Disable `--no-normalize` if data is already normalized
+```python
+architecture: "cnn_multiscale"
+cnn_multiscale_num_scales: 3
+cnn_multiscale_base_channels: 16
+cnn_multiscale_expansion_size: 8
+num_layers: 4
+cnn_use_residual: true
+```
 
-### Device Issues
+### 4. Graph Neural Network (GNN)
 
-Verify CUDA installation:
+**Description**: Treats features as node attributes in a fully connected graph, using graph convolution or graph attention.
+
+**Key Features**:
+
+- Models feature relationships as a graph
+- Graph Attention Networks (GAT) or Graph Convolutional Networks (GCN)
+- Learns node embeddings and attention weights
+- Permutation-invariant architecture
+- State-of-the-art for structured feature interactions
+
+**Best for**: Learning complex feature relationships and interactions
+
+**Configuration**:
+
+```python
+architecture: "gnn"
+gnn_type: "gat"  # or "gcn"
+gnn_hidden_dim: 64
+gnn_num_layers: 3
+dropout_rate: 0.2
+```
+
+### Performance Comparison (20 epochs, LR=0.01)
+
+Based on benchmark results with 7,793 chemical compounds:
+
+| Rank | Architecture         | Test RMSE    | Improvement | Parameters |
+| ---- | -------------------- | ------------ | ----------- | ---------- |
+| 🥇   | Graph Neural Network | 115.79 kg/m³ | 42.5%       | ~25K       |
+| 🥈   | Multi-Scale CNN      | 132.11 kg/m³ | 34.4%       | ~40K       |
+| 🥉   | CNN                  | 135.53 kg/m³ | 32.8%       | ~16K       |
+| 4️⃣   | MLP                  | 141.32 kg/m³ | 29.8%       | ~6K        |
+
+**Baseline**: Naive prediction (always predict mean) = 201.44 kg/m³ RMSE
+
+## Usage
+
+### 1. Quick Start - Training a Model
+
+#### Train Default MLP (Quick)
+
+```bash
+python train.py --epochs 50
+```
+
+#### Train GNN (Best Performance)
+
+```bash
+python train.py --architecture gnn --epochs 100
+```
+
+#### Train Multi-Scale CNN
+
+```bash
+python train.py --architecture cnn_multiscale --epochs 100
+```
+
+### 2. Configuration-Based Training
+
+Edit `config.py` to set your preferred defaults:
+
+```python
+@dataclass
+class ModelConfig:
+    architecture: str = "gnn"           # Choose: "mlp", "cnn", "cnn_multiscale", "gnn"
+    # ... rest of architecture-specific parameters
+```
+
+Then simply run:
+
+```bash
+python train.py --epochs 100
+```
+
+### 3. Training with Custom Hyperparameters
+
+```bash
+python train.py \
+    --architecture gnn \
+    --epochs 100 \
+    --batch-size 32 \
+    --learning-rate 0.005 \
+    --device cuda
+```
+
+### 4. Making Predictions
 
 ```python
 import torch
-print(torch.cuda.is_available())
-print(torch.cuda.get_device_name(0))
+from config import ModelConfig
+from models.gnn import GraphNeuralNetwork
+
+# Load trained model
+config = ModelConfig(architecture="gnn")
+model = GraphNeuralNetwork(config)
+checkpoint = torch.load("results_gnn/best_model.pt")
+model.load_state_dict(checkpoint['model_state_dict'])
+model.eval()
+
+# Make predictions
+input_features = torch.randn(8, 4)  # Batch of 8 samples, 4 features
+with torch.no_grad():
+    predictions = model(input_features)
+```
+
+### 5. Complete Benchmarking (Compare All Architectures)
+
+Run full benchmark comparing all 4 architectures:
+
+```bash
+python benchmark_all_architectures.py --epochs 100
+```
+
+This generates:
+
+- **benchmark_results.png**: 6-panel visualization comparing:
+
+  1. Test RMSE by architecture
+  2. Best validation RMSE
+  3. Model complexity (estimated parameters)
+  4. Training loss trajectories
+  5. Validation loss trajectories
+  6. Performance metrics comparison
+
+- **benchmark_results.json**: Numerical results for further analysis
+
+**Benchmark with Custom Settings**:
+
+```bash
+python benchmark_all_architectures.py --epochs 100 --learning-rate 0.01
+```
+
+### 6. Data Analysis & RMSE Interpretation
+
+Understand the data ranges and baseline metrics:
+
+```bash
+python analyze_data_ranges.py
+```
+
+Output shows:
+
+- Feature ranges (SigC, SigH, EpsC, EpsH)
+- Target (density) statistics
+- Baseline naive prediction RMSE (201.44 kg/m³)
+
+Interpret your model's RMSE:
+
+```bash
+python analyze_rmse.py
+```
+
+This displays RMSE as:
+
+- % of density range
+- % of standard deviation
+- % of mean value
+- Improvement over naive baseline
+
+## Command-Line Arguments
+
+### Architecture Selection
+
+- `--architecture`: Choose model type: `mlp`, `cnn`, `cnn_multiscale`, or `gnn` (default: from config.py)
+
+### MLP-Specific
+
+- `--num-layers`: Number of hidden layers (default: 1)
+- `--expansion-factor`: Hidden dimension multiplier (default: 8)
+- `--use-swiglu`: Use SwiGLU activation (default: true)
+
+### CNN-Specific
+
+- `--cnn-num-layers`: Number of convolutional layers (default: 4)
+- `--cnn-kernel-size`: Convolutional kernel size (default: 3)
+- `--cnn-expansion-size`: Channel expansion (default: 8)
+- `--cnn-use-batch-norm`: Enable batch normalization (default: true)
+- `--cnn-use-residual`: Enable residual connections (default: false for CNN, true for Multi-Scale)
+
+### GNN-Specific
+
+- `--gnn-type`: Graph type: `gat` or `gcn` (default: gat)
+- `--gnn-hidden-dim`: Hidden dimension for node embeddings (default: 64)
+- `--gnn-num-layers`: Number of graph convolution layers (default: 3)
+- `--dropout-rate`: Dropout probability (default: 0.2)
+
+### Training
+
+- `--epochs`: Number of training epochs (default: 100)
+- `--batch-size`: Batch size (default: 64)
+- `--learning-rate`: Learning rate (default: 0.01)
+- `--optimizer`: `adam` or `sgd` (default: adam)
+- `--loss`: `mse` or `mae` (default: mse)
+
+### Data
+
+- `--data-dir`: Directory with CSV files (default: current directory)
+- `--val-split`: Validation split ratio (default: 0.18)
+- `--test-split`: Test split ratio (default: 0.1)
+- `--no-normalize`: Disable input/output normalization (default: false)
+
+### General
+
+- `--device`: `cuda` or `cpu` (default: auto-detect)
+- `--seed`: Random seed (default: 42)
+- `--output-dir`: Results output directory (default: ./results\_{architecture})
+
+## Configuration Files
+
+All configuration is managed through `config.py` with dataclasses:
+
+### ModelConfig
+
+Defines the architecture and model hyperparameters:
+
+```python
+@dataclass
+class ModelConfig:
+    # Architecture selection
+    architecture: str = "gnn"                    # "mlp", "cnn", "cnn_multiscale", "gnn"
+
+    # Common
+    input_dim: int = 4
+    output_dim: int = 1
+    device: str = "cuda"
+    dtype: str = "float32"
+
+    # MLP parameters
+    num_layers: int = 1
+    expansion_factor: float = 8
+    use_swiglu: bool = True
+
+    # CNN parameters
+    cnn_num_layers: int = 4
+    cnn_kernel_size: int = 3
+    cnn_expansion_size: int = 8
+    cnn_use_batch_norm: bool = True
+    cnn_use_residual: bool = False
+
+    # Multi-Scale CNN parameters
+    cnn_multiscale_num_scales: int = 3
+    cnn_multiscale_base_channels: int = 16
+    cnn_multiscale_expansion_size: int = 8
+
+    # GNN parameters
+    gnn_type: str = "gat"                       # "gat" or "gcn"
+    gnn_hidden_dim: int = 64
+    gnn_num_layers: int = 3
+    dropout_rate: float = 0.2
+```
+
+### TrainingConfig
+
+Defines training hyperparameters:
+
+```python
+@dataclass
+class TrainingConfig:
+    learning_rate: float = 0.01
+    batch_size: int = 64
+    num_epochs: int = 100
+    validation_split: float = 0.18
+    test_split: float = 0.1
+    random_seed: int = 42
+    loss_fn: str = "mse"                        # "mse" or "mae"
+    optimizer: str = "adam"                     # "adam" or "sgd"
+    normalize_inputs: bool = True
+    normalize_outputs: bool = True
+    save_best_model: bool = True
+```
+
+## Understanding the Data
+
+### Input Features
+
+The model expects 4 LJ potential parameters:
+
+- **SigC**: Sigma for carbon (Ångströms), range: 0.05 - 0.35
+- **SigH**: Sigma for hydrogen (Ångströms), range: 0.045 - 0.35
+- **EpsC**: Epsilon for carbon (kcal/mol), range: 0.15 - 1.15
+- **EpsH**: Epsilon for hydrogen (kcal/mol), range: 0.01 - 0.15
+
+### Output Target
+
+- **Density**: Predicted chemical density (kg/m³), range: 0 - 939.21
+- **Statistics**: Mean = 604.52, Std = 201.44
+- **Baseline RMSE** (always predict mean): 201.44 kg/m³
+
+### Dataset Format
+
+CSV files with shape (5, N) where N is number of samples:
+
+```
+,Sample_1,Sample_2,...,Sample_N
+SigC,value1,value2,...,valueN
+SigH,value1,value2,...,valueN
+EpsC,value1,value2,...,valueN
+EpsH,value1,value2,...,valueN
+Density,value1,value2,...,valueN
+```
+
+All four Dataset\_\*.csv files are automatically combined during training.
+
+## Training Process
+
+### Typical Workflow
+
+1. **Setup Environment** (one-time)
+
+   ```bash
+   python -m venv .venv
+   .\.venv\Scripts\Activate.ps1      # Windows
+   pip install -r requirements.txt
+   ```
+
+2. **Choose Architecture** (edit config.py or use CLI flag)
+
+   ```bash
+   python train.py --architecture gnn --epochs 100
+   ```
+
+3. **Monitor Training**
+
+   - Validation loss tracked during training
+   - Best model saved automatically
+   - Training history saved to results directory
+
+4. **Evaluate Results**
+
+   ```bash
+   python analyze_rmse.py
+   ```
+
+5. **Compare Architectures** (optional)
+   ```bash
+   python benchmark_all_architectures.py --epochs 100
+   ```
+
+### Output Structure
+
+After training, results are saved to `results_{architecture}/`:
+
+```
+results_gnn/
+├── best_model.pt              # Best model weights
+├── model_config.json          # Architecture configuration
+├── training_config.json       # Training hyperparameters
+├── normalization_stats.json   # Feature/target statistics
+├── training_history.json      # Train/val loss curves
+├── test_results.json          # Test RMSE and metrics
+└── predictions.pt             # Test predictions & targets
+```
+
+## Performance & Optimization
+
+### Architecture Characteristics
+
+| Aspect         | MLP          | CNN            | Multi-Scale CNN      | GNN                  |
+| -------------- | ------------ | -------------- | -------------------- | -------------------- |
+| **Speed**      | ⚡ Very Fast | 🔶 Fast        | 🟡 Medium            | 🔴 Slower            |
+| **Accuracy**   | ✓ Good       | ✓ Good         | ⭐ Better            | 🏆 Best              |
+| **Parameters** | ~6K          | ~16K           | ~40K                 | ~25K                 |
+| **Best For**   | Baselines    | Local patterns | Multi-scale features | Feature interactions |
+| **GPU Memory** | Minimal      | Low            | Moderate             | Moderate             |
+
+### Optimization Tips
+
+**For Better Accuracy**:
+
+- Use GNN or Multi-Scale CNN architecture
+- Train for longer (100+ epochs)
+- Reduce learning rate (0.005) for stability
+- Ensemble multiple models
+
+**For Speed**:
+
+- Use MLP architecture
+- Reduce batch size to 32
+- Decrease number of layers
+- Use CPU inference for edge devices
+
+**For Memory Constraints**:
+
+- Use MLP or single-scale CNN
+- Reduce batch size
+- Use int8 quantization
+- Reduce hidden dimensions via config
+
+## Troubleshooting
+
+### GPU Not Detected
+
+```bash
+python -c "import torch; print(torch.cuda.is_available())"
+```
+
+**Solution**: Reinstall PyTorch with correct CUDA version:
+
+```bash
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+```
+
+### Out of Memory
+
+**Solutions**:
+
+- Reduce `--batch-size` (e.g., 32 or 16)
+- Use CPU: `--device cpu`
+- Reduce architecture complexity
+- Use smaller `--expansion-factor` (MLP only)
+
+### Poor Performance / High RMSE
+
+**Solutions**:
+
+- Train longer: increase `--epochs`
+- Try different architecture: `--architecture gnn`
+- Adjust learning rate: `--learning-rate 0.005`
+- Normalize data: remove `--no-normalize`
+- Check data quality: `python analyze_data_ranges.py`
+
+### Data Loading Issues
+
+**Solutions**:
+
+- Verify Dataset\_\*.csv files exist in project root
+- Check file format (see Data Format section)
+- Ensure no missing values in CSV files
+
+## Performance Analysis
+
+See `PERFORMANCE_ANALYSIS.md` for detailed interpretation of:
+
+- RMSE in practical terms
+- Quality assessment framework
+- Deployment considerations
+- Example predictions with error bands
+
+## References
+
+**Papers**:
+
+- Shazeer, N., & Stern, M. (2020). "GLU Variants Improve Transformer"
+- Veličković, P., et al. (2017). "Graph Attention Networks"
+- Kipf, T., & Welling, M. (2016). "Semi-Supervised Classification with Graph Convolutional Networks"
+
+**PyTorch Documentation**:
+
+- https://pytorch.org/docs/stable/nn.html
+- https://pytorch-geometric.readthedocs.io/
+
+## Example Workflows
+
+### Workflow 1: Quick MLP Training
+
+```bash
+# Setup
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install torch numpy pandas matplotlib scikit-learn
+
+# Train for 50 epochs (quick)
+python train.py --architecture mlp --epochs 50 --learning-rate 0.01
+
+# View results
+python analyze_rmse.py
+```
+
+### Workflow 2: GNN Training (Recommended)
+
+```bash
+# Edit config.py: set architecture = "gnn"
+python train.py --epochs 100
+
+# Analyze performance
+python analyze_rmse.py
+
+# View predictions
+python -c "import torch; data = torch.load('results_gnn/predictions.pt'); print(f'Predictions shape: {data[0].shape}')"
+```
+
+### Workflow 3: Full Architecture Comparison
+
+```bash
+# Benchmark all 4 architectures (takes ~30 minutes total)
+python benchmark_all_architectures.py --epochs 50
+
+# View comparative plots
+# benchmark_results.png shows all comparisons
+# benchmark_results.json contains numerical results
+```
+
+### Workflow 4: Hyperparameter Tuning
+
+```bash
+# Compare different learning rates with GNN
+for lr in 0.001 0.005 0.01 0.05; do
+  python train.py --architecture gnn --learning-rate $lr --epochs 100
+  python analyze_rmse.py
+done
 ```
 
 ## Citation
@@ -382,16 +695,25 @@ If you use this model in your research, please cite:
 
 ```bibtex
 @software{chemical_density_surrogate,
-  title={Chemical Density Surrogate Model},
-  author={Your Name},
-  year={2024}
+  title={Chemical Density Surrogate Model with Multiple Architectures},
+  author={Projekt zur Datenanalyse},
+  year={2025},
+  url={https://github.com/Projekt-zur-Datenanalyse/density}
 }
 ```
 
 ## License
 
-[Your License Here]
+[License information to be added]
 
-## Contact
+## Contributing
 
-For questions or issues, please open an issue or contact [your contact info].
+We welcome contributions! Areas for improvement:
+
+- Additional architectures (Transformers, ResNets)
+- Uncertainty quantification
+- Active learning for sampling
+- Improved data visualization
+- Deployment optimization
+
+Please open a GitHub issue or pull request.
