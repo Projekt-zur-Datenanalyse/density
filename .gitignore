@@ -1,0 +1,7 @@
+*.png
+*.json
+results*/
+checkpoints/
+.venv/
+__pycache__/
+*/
