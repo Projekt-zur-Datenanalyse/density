@@ -57,13 +57,20 @@ def parse_arguments():
         "--num-layers",
         type=int,
         default=default_model_config.num_layers,
-        help=f"Number of hidden layers in MLP (default: {default_model_config.num_layers})",
+        help=f"Number of hidden layers in MLP (default: {default_model_config.num_layers}). Ignored if --hidden-layer-dims is specified.",
     )
     parser.add_argument(
         "--expansion-factor",
         type=int,
         default=int(default_model_config.expansion_factor),
-        help=f"Hidden dimension multiplier for MLP (default: {int(default_model_config.expansion_factor)})",
+        help=f"Hidden dimension multiplier for MLP (default: {int(default_model_config.expansion_factor)}). Ignored if --hidden-layer-dims is specified.",
+    )
+    parser.add_argument(
+        "--hidden-layer-dims",
+        type=int,
+        nargs='*',
+        default=None,
+        help="Custom hidden layer dimensions for MLP (space-separated integers). E.g., --hidden-layer-dims 32 16 8. Empty list (--hidden-layer-dims without values) creates direct input->output projection.",
     )
     parser.add_argument(
         "--use-swiglu",
@@ -360,6 +367,7 @@ def main():
         # MLP settings
         num_layers=args.num_layers,
         expansion_factor=args.expansion_factor,
+        hidden_layer_dims=args.hidden_layer_dims,  # Use custom layer dims if provided
         use_swiglu=args.use_swiglu,
         # CNN settings
         cnn_expansion_size=args.cnn_expansion_size,

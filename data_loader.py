@@ -9,6 +9,14 @@ from pathlib import Path
 import os
 
 
+# ============================================================================
+# CONFIGURATION: Set this to True to load from unified Dataset.csv instead
+#                of the 4 separate Dataset_*.csv files
+# ============================================================================
+USE_UNIFIED_DATASET = True  # Set to True to use Dataset.csv
+# ============================================================================
+
+
 class ChemicalDensityDataset(Dataset):
     """PyTorch Dataset for chemical density prediction.
     
@@ -137,7 +145,7 @@ class ChemicalDensityDataLoader:
         """Load and split the dataset.
         
         Args:
-            dataset_paths: List of CSV file paths. If None, auto-discovers Dataset_*.csv files
+            dataset_paths: List of CSV file paths. If None, uses USE_UNIFIED_DATASET to decide
             normalize_features: Whether to normalize input features
             normalize_targets: Whether to normalize target values
             validation_split: Fraction of data to use for validation (0.0-1.0)
@@ -148,29 +156,38 @@ class ChemicalDensityDataLoader:
         Returns:
             Tuple of (train_loader, val_loader, test_loader, full_dataset)
         """
-        # Auto-discover dataset files if not provided
-        if dataset_paths is None:
-            dataset_paths = sorted(self.data_dir.glob("Dataset_*.csv"))
-            dataset_paths = [str(p) for p in dataset_paths]
-            print(f"Auto-discovered {len(dataset_paths)} dataset files")
-        
-        # Load all data
-        all_features = []
-        all_targets = []
-        
-        for dataset_path in dataset_paths:
-            features, targets = self._load_single_dataset(dataset_path)
-            all_features.append(features)
-            all_targets.append(targets)
-            print(f"Loaded {len(features)} samples from {Path(dataset_path).name}")
-        
-        # Combine all datasets
-        all_features = np.concatenate(all_features, axis=0)
-        all_targets = np.concatenate(all_targets, axis=0)
+        # Determine which dataset format to use
+        if USE_UNIFIED_DATASET:
+            all_features, all_targets = self._load_unified_dataset()
+        else:
+            # Auto-discover dataset files if not provided
+            if dataset_paths is None:
+                dataset_paths = sorted(self.data_dir.glob("Dataset_*.csv"))
+                dataset_paths = [str(p) for p in dataset_paths]
+                print(f"Auto-discovered {len(dataset_paths)} dataset files")
+            
+            # Load all data
+            all_features = []
+            all_targets = []
+            
+            for dataset_path in dataset_paths:
+                features, targets = self._load_single_dataset(dataset_path)
+                all_features.append(features)
+                all_targets.append(targets)
+                print(f"Loaded {len(features)} samples from {Path(dataset_path).name}")
+            
+            # Combine all datasets
+            all_features = np.concatenate(all_features, axis=0)
+            all_targets = np.concatenate(all_targets, axis=0)
         
         print(f"Total samples: {len(all_features)}")
         print(f"Features shape: {all_features.shape}")
         print(f"Targets shape: {all_targets.shape}")
+        print(f"Feature ranges:")
+        for i, name in enumerate(['SigC', 'SigH', 'EpsC', 'EpsH']):
+            print(f"  {name}: [{all_features[:, i].min():.4f}, {all_features[:, i].max():.4f}]")
+        print(f"Target (Density) range: [{all_targets.min():.2f}, {all_targets.max():.2f}]")
+        print(f"Target std dev: {all_targets.std():.2f} kg/m³")
         
         # Create full dataset (for getting normalization statistics)
         full_dataset = ChemicalDensityDataset(
@@ -186,7 +203,7 @@ class ChemicalDensityDataLoader:
         val_size = int(validation_split * (total_size - test_size))
         train_size = total_size - val_size - test_size
         
-        print(f"Train: {train_size}, Val: {val_size}, Test: {test_size}")
+        print(f"Split: Train: {train_size}, Val: {val_size}, Test: {test_size}")
         
         # Split dataset
         train_dataset, val_dataset, test_dataset = random_split(
@@ -252,3 +269,24 @@ class ChemicalDensityDataLoader:
         features = np.column_stack([sigc_values, sigh_values, epsc_values, epsh_values])
         
         return features, density_values
+    
+    @staticmethod
+    def _load_unified_dataset() -> Tuple[np.ndarray, np.ndarray]:
+        """Load the unified Dataset.csv file with column-based format.
+        
+        Expected format (columns: SigC, SigH, EpsC, EpsH, density):
+        - Header row with column names
+        - Each row is a sample with 5 values
+        
+        Returns:
+            Tuple of (features, targets) arrays of shape (n_samples, 4) and (n_samples,)
+        """
+        df = pd.read_csv("Dataset.csv")
+        
+        # Extract features and targets
+        features = df[["SigC", "SigH", "EpsC", "EpsH"]].values.astype(np.float32)
+        targets = df["density"].values.astype(np.float32)
+        
+        print(f"[Unified Dataset] Loaded {len(features)} samples from Dataset.csv")
+        
+        return features, targets
