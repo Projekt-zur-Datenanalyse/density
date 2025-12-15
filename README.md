@@ -448,8 +448,8 @@ class TrainingConfig:
     learning_rate: float = 0.01
     batch_size: int = 64
     num_epochs: int = 100
-    validation_split: float = 0.18
-    test_split: float = 0.1
+    validation_split: float = 0.2
+    test_split: float = 0.05
     random_seed: int = 42
     loss_fn: str = "mse"                        # "mse" or "mae"
     optimizer: str = "adam"                     # "adam" or "sgd"

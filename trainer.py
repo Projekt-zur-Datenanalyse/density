@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Tuple, Optional, Dict, List
 import json
 from datetime import datetime
+import numpy as np
 try:
     from tqdm import tqdm
     HAS_TQDM = True
@@ -28,15 +29,20 @@ class ModelTrainer:
         """Initialize the trainer.
         
         Args:
-            model: PyTorch model to train
-            device: Device to train on ('cuda' or 'cpu')
+            model: PyTorch model to train or scikit-learn compatible model (e.g., LightGBM)
+            device: Device to train on ('cuda' or 'cpu') - ignored for scikit-learn models
             checkpoint_dir: Directory to save checkpoints
         """
         self.model = model
         self.device = torch.device(device)
-        self.model.to(self.device)
         self.checkpoint_dir = Path(checkpoint_dir)
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Check if this is a PyTorch model or scikit-learn compatible model
+        self.is_pytorch = isinstance(model, nn.Module)
+        
+        if self.is_pytorch:
+            self.model.to(self.device)
         
         self.best_val_loss = float('inf')
         self.training_history = {
@@ -202,11 +208,11 @@ class ModelTrainer:
             criterion: Loss function
         
         Returns:
-            Average validation RMSE
+            Validation RMSE computed from all residuals (correct calculation)
         """
         self.model.eval()
-        total_loss = 0.0
-        num_batches = 0
+        all_predictions = []
+        all_targets = []
         
         with torch.no_grad():
             for features, targets in val_loader:
@@ -214,14 +220,18 @@ class ModelTrainer:
                 targets = targets.to(self.device)
                 
                 predictions = self.model(features)
-                loss = criterion(predictions, targets)
-                
-                total_loss += loss.item()
-                num_batches += 1
+                all_predictions.append(predictions.cpu())
+                all_targets.append(targets.cpu())
         
-        # Return RMSE
-        avg_mse = total_loss / num_batches
-        return torch.sqrt(torch.tensor(avg_mse)).item()
+        # Concatenate all predictions and targets
+        all_predictions = torch.cat(all_predictions, dim=0)
+        all_targets = torch.cat(all_targets, dim=0)
+        
+        # Compute RMSE correctly: sqrt(mean(residuals²))
+        # This is mathematically equivalent to sqrt(mean((pred - target)²))
+        mse = torch.mean((all_predictions - all_targets) ** 2)
+        rmse = torch.sqrt(mse).item()
+        return rmse
     
     def train(
         self,
@@ -241,6 +251,8 @@ class ModelTrainer:
     ) -> Dict:
         """Complete training loop with learning rate scheduling and regularization.
         
+        Handles both PyTorch and scikit-learn compatible models (e.g., LightGBM).
+        
         Args:
             train_loader: Training data loader
             val_loader: Validation data loader
@@ -259,6 +271,13 @@ class ModelTrainer:
         Returns:
             Training history dictionary
         """
+        # Handle LightGBM models separately
+        if not self.is_pytorch:
+            return self._train_sklearn_model(
+                train_loader, val_loader, num_epochs, show_progress_bar, save_best_model
+            )
+        
+        # PyTorch training logic
         optimizer = self.configure_optimizer(optimizer_name, learning_rate, weight_decay)
         criterion = self.configure_loss(loss_name)
         
@@ -333,6 +352,103 @@ class ModelTrainer:
         
         return self.training_history
     
+    def _train_sklearn_model(
+        self,
+        train_loader: DataLoader,
+        val_loader: DataLoader,
+        num_epochs: int = 100,
+        show_progress_bar: bool = True,
+        save_best_model: bool = True,
+    ) -> Dict:
+        """Train scikit-learn compatible models like LightGBM.
+        
+        Args:
+            train_loader: Training data loader
+            val_loader: Validation data loader
+            num_epochs: Number of epochs (iterations)
+            show_progress_bar: Whether to show progress
+            save_best_model: Whether to save the best model
+        
+        Returns:
+            Training history dictionary
+        """
+        print(f"\n{'=' * 70}")
+        print(f"Starting LightGBM training")
+        print(f"{'=' * 70}")
+        print(f"Epochs: {num_epochs}")
+        print(f"Batch size: {train_loader.batch_size}")
+        print(f"{'=' * 70}\n")
+        
+        # Extract all data from loaders
+        X_train = []
+        y_train = []
+        for features, targets in train_loader:
+            X_train.append(features.numpy())
+            y_train.append(targets.numpy().ravel())
+        X_train = np.concatenate(X_train, axis=0)
+        y_train = np.concatenate(y_train, axis=0)
+        
+        X_val = []
+        y_val = []
+        for features, targets in val_loader:
+            X_val.append(features.numpy())
+            y_val.append(targets.numpy().ravel())
+        X_val = np.concatenate(X_val, axis=0)
+        y_val = np.concatenate(y_val, axis=0)
+        
+        # Train the model
+        self.model.fit(
+            X_train,
+            y_train,
+            X_val=X_val,
+            y_val=y_val,
+            eval_metric='rmse',
+            early_stopping_rounds=50,
+            verbose=show_progress_bar,
+        )
+        
+        # Get best validation RMSE from LightGBM's internal training history
+        # LightGBM stores validation scores in evals_result_
+        best_val_rmse = None
+        if hasattr(self.model, 'evals_result_'):
+            # evals_result_ is a dict like {'valid_0': {'rmse': [...]}}
+            val_scores = self.model.evals_result_.get('valid_0', {}).get('rmse', [])
+            if val_scores:
+                best_val_rmse = float(min(val_scores))  # Best (lowest) validation RMSE
+        
+        # If we can't get best from history, use best_iteration
+        if best_val_rmse is None and hasattr(self.model, 'best_iteration'):
+            best_iteration = self.model.best_iteration
+            val_pred = self.model.predict(X_val, num_iteration=best_iteration)
+            best_val_rmse = float(np.sqrt(np.mean((val_pred - y_val) ** 2)))
+        
+        # Fallback: use final validation RMSE (not ideal but better than nothing)
+        if best_val_rmse is None:
+            val_pred = self.model.predict(X_val)
+            best_val_rmse = float(np.sqrt(np.mean((val_pred - y_val) ** 2)))
+        
+        # Calculate final validation and training RMSE for logging
+        val_pred_final = self.model.predict(X_val)
+        val_rmse_final = np.sqrt(np.mean((val_pred_final - y_val) ** 2))
+        train_rmse = np.sqrt(np.mean((self.model.predict(X_train) - y_train) ** 2))
+        
+        self.best_val_loss = best_val_rmse
+        # Convert numpy values to Python floats for JSON serialization
+        self.training_history['train_loss'].append(float(train_rmse))
+        self.training_history['val_loss'].append(best_val_rmse)
+        self.training_history['epochs'].append(1)  # LightGBM handles its own epochs
+        
+        # Save model
+        if save_best_model:
+            self.save_checkpoint(1, is_best=True)
+        
+        print(f"\n{'=' * 70}")
+        print(f"Training completed!")
+        print(f"Best validation RMSE: {self.best_val_loss:.6f}")
+        print(f"{'=' * 70}\n")
+        
+        return self.training_history
+    
     def save_checkpoint(self, epoch: int, is_best: bool = False) -> None:
         """Save a model checkpoint.
         
@@ -343,14 +459,17 @@ class ModelTrainer:
         filename = "best_model.pt" if is_best else f"checkpoint_epoch_{epoch}.pt"
         filepath = self.checkpoint_dir / filename
         
-        checkpoint = {
-            'epoch': epoch,
-            'model_state_dict': self.model.state_dict(),
-            'model_config': self.model.config.__dict__ if hasattr(self.model, 'config') else None,
-            'timestamp': datetime.now().isoformat(),
-        }
-        
-        torch.save(checkpoint, filepath)
+        if self.is_pytorch:
+            checkpoint = {
+                'epoch': epoch,
+                'model_state_dict': self.model.state_dict(),
+                'model_config': self.model.config.__dict__ if hasattr(self.model, 'config') else None,
+                'timestamp': datetime.now().isoformat(),
+            }
+            torch.save(checkpoint, filepath)
+        else:
+            # For scikit-learn models (e.g., LightGBM), use pickle
+            self.model.save(str(filepath))
     
     def load_checkpoint(self, filepath: str) -> None:
         """Load a model checkpoint.
@@ -358,9 +477,15 @@ class ModelTrainer:
         Args:
             filepath: Path to checkpoint file
         """
-        checkpoint = torch.load(filepath, map_location=self.device)
-        self.model.load_state_dict(checkpoint['model_state_dict'])
-        print(f"Loaded checkpoint from {filepath}")
+        if self.is_pytorch:
+            checkpoint = torch.load(filepath, map_location=self.device)
+            self.model.load_state_dict(checkpoint['model_state_dict'])
+            print(f"Loaded checkpoint from {filepath}")
+        else:
+            # For scikit-learn models
+            from lightgbm_model import LightGBMSurrogate
+            self.model = LightGBMSurrogate.load(filepath)
+            print(f"Loaded checkpoint from {filepath}")
     
     def test(
         self,
@@ -369,13 +494,20 @@ class ModelTrainer:
     ) -> Tuple[float, torch.Tensor, torch.Tensor]:
         """Evaluate on test set.
         
+        Handles both PyTorch and scikit-learn compatible models.
+        
         Args:
             test_loader: Test data loader
-            criterion: Loss function
+            criterion: Loss function (ignored for scikit-learn models)
         
         Returns:
             Tuple of (test_rmse, predictions, targets)
         """
+        # Handle LightGBM models
+        if not self.is_pytorch:
+            return self._test_sklearn_model(test_loader)
+        
+        # PyTorch test logic
         self.model.eval()
         total_loss = 0.0
         all_predictions = []
@@ -395,7 +527,43 @@ class ModelTrainer:
         
         all_predictions = torch.cat(all_predictions, dim=0)
         all_targets = torch.cat(all_targets, dim=0)
-        avg_mse = total_loss / len(test_loader)
-        avg_rmse = torch.sqrt(torch.tensor(avg_mse)).item()
         
-        return avg_rmse, all_predictions, all_targets
+        # Compute RMSE correctly: sqrt(mean(residuals²))
+        # NOT batch-averaged: total_loss / len(test_loader) is incorrect
+        mse = torch.mean((all_predictions - all_targets) ** 2)
+        test_rmse = torch.sqrt(mse).item()
+        
+        return test_rmse, all_predictions, all_targets
+    
+    def _test_sklearn_model(
+        self,
+        test_loader: DataLoader,
+    ) -> Tuple[float, torch.Tensor, torch.Tensor]:
+        """Test scikit-learn compatible models like LightGBM.
+        
+        Args:
+            test_loader: Test data loader
+        
+        Returns:
+            Tuple of (test_rmse, predictions, targets) as PyTorch tensors
+        """
+        # Extract all test data
+        X_test = []
+        y_test = []
+        for features, targets in test_loader:
+            X_test.append(features.numpy())
+            y_test.append(targets.numpy().ravel())
+        X_test = np.concatenate(X_test, axis=0)
+        y_test = np.concatenate(y_test, axis=0)
+        
+        # Make predictions
+        predictions = self.model.predict(X_test)
+        
+        # Calculate RMSE
+        rmse = np.sqrt(np.mean((predictions - y_test) ** 2))
+        
+        # Convert to torch tensors for compatibility
+        predictions_tensor = torch.from_numpy(predictions.reshape(-1, 1)).float()
+        targets_tensor = torch.from_numpy(y_test.reshape(-1, 1)).float()
+        
+        return rmse, predictions_tensor, targets_tensor

@@ -11,7 +11,6 @@ optimal hyperparameter configurations for any of the 4 model architectures:
 - **MLP**: Multi-Layer Perceptron
 - **CNN**: Convolutional Neural Network
 - **CNN_MULTISCALE**: Multi-Scale CNN (Inception-style)
-- **GNN**: Graph Neural Network
 
 ## Features
 

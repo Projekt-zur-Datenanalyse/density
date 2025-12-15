@@ -1,7 +1,7 @@
 """Optuna objective function for hyperparameter tuning.
 
 This module provides an objective function for Optuna to optimize model
-hyperparameters across all 4 architectures.
+hyperparameters across all 3 architectures.
 """
 
 import torch
@@ -22,10 +22,10 @@ except ImportError:
     CNN_AVAILABLE = False
 
 try:
-    from gnn_model import GraphNeuralSurrogate
-    GNN_AVAILABLE = True
+    from lightgbm_model import LightGBMSurrogate
+    LIGHTGBM_AVAILABLE = True
 except ImportError:
-    GNN_AVAILABLE = False
+    LIGHTGBM_AVAILABLE = False
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -40,7 +40,7 @@ def create_model_from_hyperparams(
     
     Args:
         hyperparameters: Dictionary of hyperparameters
-        architecture: Model architecture ("mlp", "cnn", "cnn_multiscale", "gnn")
+        architecture: Model architecture ("mlp", "cnn", "cnn_multiscale", "lightgbm")
         device: Device to use ("cuda" or "cpu")
         
     Returns:
@@ -109,26 +109,22 @@ def create_model_from_hyperparams(
             dropout_rate=model_config.dropout_rate,
         )
     
-    elif architecture == "gnn":
-        if not GNN_AVAILABLE:
-            raise ImportError("GNN model not available. Check gnn_model.py")
+    elif architecture == "lightgbm":
+        if not LIGHTGBM_AVAILABLE:
+            raise ImportError("LightGBM not available. Install with: pip install lightgbm")
         
-        model_config = ModelConfig(
-            architecture="gnn",
-            input_dim=4,
-            output_dim=1,
-            gnn_hidden_dim=int(hyperparameters.get("gnn_hidden_dim", 16)),
-            gnn_num_layers=int(hyperparameters.get("gnn_num_layers", 6)),
-            gnn_type=hyperparameters.get("gnn_type", "gat"),
-            dropout_rate=dropout_rate,
-            device=device,
-        )
-        return GraphNeuralSurrogate(
-            num_node_features=model_config.input_dim,
-            hidden_dim=model_config.gnn_hidden_dim,
-            num_layers=model_config.gnn_num_layers,
-            gnn_type=model_config.gnn_type,
-            dropout_rate=model_config.dropout_rate,
+        return LightGBMSurrogate(
+            num_leaves=int(hyperparameters.get("lgb_num_leaves", 31)),
+            learning_rate=float(hyperparameters.get("lgb_learning_rate", 0.05)),
+            num_boost_round=int(hyperparameters.get("lgb_num_boost_round", 100)),
+            max_depth=int(hyperparameters.get("lgb_max_depth", -1)),
+            min_child_samples=int(hyperparameters.get("lgb_min_child_samples", 20)),
+            subsample=float(hyperparameters.get("lgb_subsample", 0.8)),
+            colsample_bytree=float(hyperparameters.get("lgb_colsample_bytree", 0.8)),
+            reg_alpha=float(hyperparameters.get("lgb_reg_alpha", 0.0)),
+            reg_lambda=float(hyperparameters.get("lgb_reg_lambda", 0.0)),
+            boosting_type=hyperparameters.get("lgb_boosting_type", "gbdt"),
+            metric="rmse",
         )
     
     else:
@@ -136,24 +132,28 @@ def create_model_from_hyperparams(
 
 
 def train_model(
-    model: nn.Module,
+    model,
     train_loader,
     val_loader,
     test_loader,
     hyperparameters: Dict[str, Any],
     num_epochs: int,
     device: str,
+    target_std: float = None,
 ) -> Tuple[float, float, float, float]:
     """Train a model with given hyperparameters.
     
+    Supports both PyTorch models (nn.Module) and scikit-learn compatible models (e.g., LightGBM).
+    
     Args:
-        model: PyTorch model
+        model: PyTorch model (nn.Module) or scikit-learn compatible model
         train_loader: Training data loader
         val_loader: Validation data loader
         test_loader: Test data loader
         hyperparameters: Dictionary of hyperparameters
         num_epochs: Number of epochs to train
         device: Device to use
+        target_std: Target standard deviation for denormalization (if None, will try to get from dataset)
         
     Returns:
         Tuple of (best_val_rmse, test_rmse, test_rmse_denorm, test_mae)
@@ -161,62 +161,107 @@ def train_model(
     # Create trainer
     trainer = ModelTrainer(model, device=device, checkpoint_dir="./optuna_checkpoints")
     
-    # Extract training hyperparameters
-    learning_rate = float(hyperparameters.get("learning_rate", 0.01))
-    weight_decay = float(hyperparameters.get("weight_decay", 1e-5))
-    optimizer_name = hyperparameters.get("optimizer", "adam")
-    lr_scheduler = hyperparameters.get("lr_scheduler", "cosine")
-    loss_fn = hyperparameters.get("loss_fn", "mse")
+    # Detect if model is PyTorch or scikit-learn based
+    is_pytorch = isinstance(model, nn.Module)
     
-    # Configure loss and optimizer
-    criterion = trainer.configure_loss(loss_fn)
-    optimizer = trainer.configure_optimizer(optimizer_name, learning_rate, weight_decay)
-    scheduler = trainer.configure_scheduler(
-        optimizer=optimizer,
-        scheduler_name=lr_scheduler,
-        num_epochs=num_epochs,
-        steps_per_epoch=len(train_loader),
-        cosine_t_max=num_epochs,
-        cosine_eta_min=1e-3,
-    )
-    
-    # Training loop
-    best_val_loss = float('inf')
-    
-    for epoch in range(num_epochs):
-        # Train
-        train_rmse = trainer.train_epoch(
-            train_loader,
-            optimizer,
-            criterion,
-            scheduler=scheduler,
-            show_progress=False,
+    if is_pytorch:
+        # PyTorch training pipeline
+        # Extract training hyperparameters
+        learning_rate = float(hyperparameters.get("learning_rate", 0.01))
+        weight_decay = float(hyperparameters.get("weight_decay", 1e-5))
+        optimizer_name = hyperparameters.get("optimizer", "adam")
+        lr_scheduler = hyperparameters.get("lr_scheduler", "cosine")
+        loss_fn = hyperparameters.get("loss_fn", "mse")
+        
+        # Configure loss and optimizer
+        criterion = trainer.configure_loss(loss_fn)
+        optimizer = trainer.configure_optimizer(optimizer_name, learning_rate, weight_decay)
+        scheduler = trainer.configure_scheduler(
+            optimizer=optimizer,
+            scheduler_name=lr_scheduler,
+            num_epochs=num_epochs,
+            steps_per_epoch=len(train_loader),
+            cosine_t_max=num_epochs,
+            cosine_eta_min=1e-3,
         )
         
-        # Validate
-        val_rmse = trainer.validate(val_loader, criterion)
+        # Training loop
+        best_val_loss = float('inf')
         
-        # Step scheduler
-        if scheduler is not None and not isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR):
-            scheduler.step()
+        for epoch in range(num_epochs):
+            # Train
+            train_rmse = trainer.train_epoch(
+                train_loader,
+                optimizer,
+                criterion,
+                scheduler=scheduler,
+                show_progress=False,
+            )
+            
+            # Validate
+            val_rmse = trainer.validate(val_loader, criterion)
+            
+            # Step scheduler
+            if scheduler is not None and not isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR):
+                scheduler.step()
+            
+            # Track best validation loss
+            if val_rmse < best_val_loss:
+                best_val_loss = val_rmse
         
-        # Track best validation loss
-        if val_rmse < best_val_loss:
-            best_val_loss = val_rmse
+        # Test on final model
+        test_rmse, predictions, targets = trainer.test(test_loader, criterion)
+        
+        # Calculate MAE (on normalized scale)
+        mae = torch.mean(torch.abs(predictions - targets)).item()
+        
+        # Denormalize RMSE and MAE by multiplying by target_std
+        # Formula: error_denorm = error_norm * target_std
+        # (We multiply by std but don't add mean because error metrics don't have an offset)
+        if target_std is None:
+            target_std = test_loader.dataset.target_std if hasattr(test_loader.dataset, 'target_std') else 1.0
+        
+        test_rmse_denorm = test_rmse * target_std
+        mae_denorm = mae * target_std
+        
+        return best_val_loss, test_rmse, test_rmse_denorm, mae_denorm
     
-    # Test on final model
-    test_rmse, predictions, targets = trainer.test(test_loader, criterion)
-    
-    # Calculate MAE (on normalized scale)
-    mae = torch.mean(torch.abs(predictions - targets)).item()
-    
-    # Denormalize RMSE and MAE by multiplying by target_std
-    # Formula: error_denorm = error_norm * target_std
-    # (We multiply by std but don't add mean because error metrics don't have an offset)
-    test_rmse_denorm = test_rmse * test_loader.dataset.target_std if hasattr(test_loader.dataset, 'target_std') else test_rmse
-    mae_denorm = mae * test_loader.dataset.target_std if hasattr(test_loader.dataset, 'target_std') else mae
-    
-    return best_val_loss, test_rmse, test_rmse_denorm, mae_denorm
+    else:
+        # Scikit-learn compatible model training (e.g., LightGBM)
+        # Train using trainer's sklearn method
+        history = trainer._train_sklearn_model(
+            train_loader, 
+            val_loader, 
+            num_epochs=num_epochs,
+            show_progress_bar=False,
+            save_best_model=True
+        )
+        
+        # Get best validation RMSE from history
+        val_rmse_list = history.get("val_loss", [])
+        if val_rmse_list:
+            best_val_rmse = float(min(val_rmse_list))
+        else:
+            best_val_rmse = float('inf')
+        
+        # Test the model - returns (rmse, predictions_tensor, targets_tensor)
+        test_rmse, predictions, targets = trainer._test_sklearn_model(test_loader)
+        
+        # Convert to float for consistency
+        test_rmse = float(test_rmse)
+        
+        # Calculate MAE (on normalized scale)
+        test_mae = float(torch.mean(torch.abs(predictions - targets)).item())
+        
+        # Denormalize RMSE and MAE
+        # Get target_std from passed parameter or test_loader dataset
+        if target_std is None:
+            target_std = test_loader.dataset.target_std if hasattr(test_loader.dataset, 'target_std') else 1.0
+        
+        test_rmse_denorm = test_rmse * target_std
+        test_mae_denorm = test_mae * target_std
+        
+        return best_val_rmse, test_rmse, test_rmse_denorm, test_mae_denorm
 
 
 def create_objective(
@@ -225,6 +270,7 @@ def create_objective(
     data_dir: str,
     device: str,
     suggest_fn,
+    seed: int = 46,
 ) -> callable:
     """Create an objective function for Optuna.
     
@@ -234,6 +280,7 @@ def create_objective(
         data_dir: Directory with data
         device: Device to use
         suggest_fn: Function to suggest hyperparameters
+        seed: Random seed for reproducibility (default: 46)
         
     Returns:
         Objective function for Optuna
@@ -241,6 +288,16 @@ def create_objective(
     def objective(trial) -> float:
         """Objective function to minimize (validation RMSE)."""
         try:
+            # Set random seed for reproducibility within each trial
+            import numpy as np
+            np.random.seed(seed + trial.number)  # Vary seed per trial for diversity
+            torch.manual_seed(seed + trial.number)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed(seed + trial.number)
+                torch.cuda.manual_seed_all(seed + trial.number)
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.benchmark = False
+            
             # Suggest hyperparameters
             hyperparameters = suggest_fn(trial)
             
@@ -254,7 +311,7 @@ def create_objective(
                 normalize_features=True,
                 normalize_targets=True,
                 validation_split=0.2,
-                test_split=0.1,
+                test_split=0.05,
                 batch_size=batch_size,
             )
             
@@ -267,20 +324,35 @@ def create_objective(
                 hyperparameters,
                 num_epochs,
                 device,
+                target_std=dataset.target_std,  # Pass the correct target_std
             )
             
+            # Check for invalid results
+            if best_val_rmse is None or best_val_rmse == float('inf') or best_val_rmse != best_val_rmse:  # NaN check
+                logger.warning(f"Trial returned invalid RMSE: {best_val_rmse}")
+                return float('inf')
+            
             # Log trial info
-            trial.set_user_attr("test_rmse", test_rmse)
-            trial.set_user_attr("test_rmse_denorm", test_rmse_denorm)
-            trial.set_user_attr("test_mae", test_mae)
+            trial.set_user_attr("test_rmse", float(test_rmse) if test_rmse != float('inf') else None)
+            trial.set_user_attr("test_rmse_denorm", float(test_rmse_denorm) if test_rmse_denorm != float('inf') else None)
+            trial.set_user_attr("test_mae", float(test_mae) if test_mae != float('inf') else None)
             trial.set_user_attr("target_std", float(dataset.target_std) if hasattr(dataset, 'target_std') else None)
             
-            return best_val_rmse
+            # Debug: Log validation RMSE denormalization
+            val_rmse_denorm = best_val_rmse * (float(dataset.target_std) if hasattr(dataset, 'target_std') else 1.0)
+            trial.set_user_attr("val_rmse_denorm", float(val_rmse_denorm))
+            
+            # CRITICAL: Return validation RMSE for optimization (not test RMSE)
+            # Test set should ONLY be used for final evaluation, never for tuning
+            # Using test RMSE for optimization would overfit hyperparameters to test set
+            # Validation set is the appropriate metric for hyperparameter selection
+            logger.info(f"Trial {trial.number}: Val RMSE={best_val_rmse:.6f}, Test RMSE={test_rmse:.6f}")
+            return float(best_val_rmse)
         
         except Exception as e:
-            logger.error(f"Trial failed with error: {e}")
+            logger.error(f"Trial {trial.number} failed with error: {str(e)}")
             import traceback
-            logger.error(f"Traceback: {traceback.format_exc()}")
+            logger.error(f"Traceback:\n{traceback.format_exc()}")
             # Return a large value to indicate failure
             return float('inf')
     

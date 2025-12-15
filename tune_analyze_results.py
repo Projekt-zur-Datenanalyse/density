@@ -1,4 +1,4 @@
-"""Analysis and visualization of Ray Tune hyperparameter tuning results.
+"""Analysis and visualization of Optuna hyperparameter tuning results.
 
 This script provides tools to:
 - Load and analyze tuning results
@@ -6,6 +6,8 @@ This script provides tools to:
 - Visualize hyperparameter importance
 - Generate performance reports
 - Extract and export best configurations
+
+Supports all 4 architectures: MLP, CNN, CNN_MULTISCALE, LightGBM
 """
 
 import json

@@ -74,7 +74,7 @@ class ConvolutionalSurrogate(nn.Module):
         self.expand = nn.Sequential(
             nn.Linear(num_input_features, expanded_size),
             nn.BatchNorm1d(expanded_size) if use_batch_norm else nn.Identity(),
-            nn.ReLU(),
+            nn.SiLU(),
         )
         
         # Convolutional layers
@@ -114,13 +114,10 @@ class ConvolutionalSurrogate(nn.Module):
         
         # Output head
         self.output_head = nn.Sequential(
-            nn.Linear(conv_channels[-1], 256),
-            nn.ReLU(),
+            nn.Linear(conv_channels[-1], 64),
+            nn.SiLU(),
             nn.Dropout(dropout_rate),
-            nn.Linear(256, 128),
-            nn.ReLU(),
-            nn.Dropout(dropout_rate),
-            nn.Linear(128, output_dim),
+            nn.Linear(64, output_dim),
         )
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -219,7 +216,7 @@ class MultiScaleConvolutionalSurrogate(nn.Module):
         self.expand = nn.Sequential(
             nn.Linear(num_input_features, expanded_size),
             nn.BatchNorm1d(expanded_size),
-            nn.ReLU(),
+            nn.SiLU(),
         )
         
         # Multi-scale convolutional branches
@@ -233,10 +230,10 @@ class MultiScaleConvolutionalSurrogate(nn.Module):
             branch = nn.Sequential(
                 nn.Conv2d(1, base_channels, kernel_size=kernel_size, padding=padding),
                 nn.BatchNorm2d(base_channels),
-                nn.ReLU(),
+                nn.SiLU(),
                 nn.Conv2d(base_channels, base_channels, kernel_size=kernel_size, padding=padding),
                 nn.BatchNorm2d(base_channels),
-                nn.ReLU(),
+                nn.SiLU(),
                 nn.AdaptiveAvgPool2d((1, 1)),
             )
             self.branches.append(branch)
@@ -244,13 +241,10 @@ class MultiScaleConvolutionalSurrogate(nn.Module):
         # Concatenation and output
         total_features = base_channels * num_scales
         self.output_head = nn.Sequential(
-            nn.Linear(total_features, 256),
-            nn.ReLU(),
+            nn.Linear(total_features, 64),
+            nn.SiLU(),
             nn.Dropout(dropout_rate),
-            nn.Linear(256, 128),
-            nn.ReLU(),
-            nn.Dropout(dropout_rate),
-            nn.Linear(128, output_dim),
+            nn.Linear(64, output_dim),
         )
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:

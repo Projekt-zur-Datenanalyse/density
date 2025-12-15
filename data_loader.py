@@ -137,10 +137,11 @@ class ChemicalDensityDataLoader:
         dataset_paths: Optional[List[str]] = None,
         normalize_features: bool = True,
         normalize_targets: bool = True,
-        validation_split: float = 0.2,
+        validation_split: float = 0.1,
         test_split: float = 0.1,
         batch_size: int = 64,
         num_workers: int = 0,
+        seed: int = 46,
     ) -> Tuple[DataLoader, DataLoader, DataLoader, ChemicalDensityDataset]:
         """Load and split the dataset.
         
@@ -152,6 +153,7 @@ class ChemicalDensityDataLoader:
             test_split: Fraction of data to use for testing (0.0-1.0)
             batch_size: Batch size for data loaders
             num_workers: Number of workers for data loading
+            seed: Random seed for reproducible train/val/test splits (default: 46)
         
         Returns:
             Tuple of (train_loader, val_loader, test_loader, full_dataset)
@@ -189,27 +191,81 @@ class ChemicalDensityDataLoader:
         print(f"Target (Density) range: [{all_targets.min():.2f}, {all_targets.max():.2f}]")
         print(f"Target std dev: {all_targets.std():.2f} kg/m³")
         
-        # Create full dataset (for getting normalization statistics)
-        full_dataset = ChemicalDensityDataset(
-            features=all_features,
-            targets=all_targets,
-            normalize_features=normalize_features,
-            normalize_targets=normalize_targets,
-        )
-        
-        # Calculate sizes
-        total_size = len(full_dataset)
+        # Calculate split sizes
+        total_size = len(all_features)
         test_size = int(test_split * total_size)
         val_size = int(validation_split * (total_size - test_size))
         train_size = total_size - val_size - test_size
         
         print(f"Split: Train: {train_size}, Val: {val_size}, Test: {test_size}")
         
-        # Split dataset
-        train_dataset, val_dataset, test_dataset = random_split(
-            full_dataset,
-            [train_size, val_size, test_size],
+        # Set seed for reproducible random split
+        np.random.seed(seed)
+        
+        # Split indices BEFORE creating datasets (to compute stats only on training set)
+        indices = np.random.permutation(total_size)
+        train_indices = indices[:train_size]
+        val_indices = indices[train_size:train_size + val_size]
+        test_indices = indices[train_size + val_size:]
+        
+        # Extract training data ONLY for computing normalization statistics
+        train_features = all_features[train_indices]
+        train_targets = all_targets[train_indices]
+        
+        # Compute normalization statistics ONLY on training set (prevents data leakage)
+        if normalize_features:
+            feature_mean = train_features.mean(axis=0)
+            feature_std = train_features.std(axis=0)
+            feature_std[feature_std == 0] = 1.0  # Avoid division by zero
+        else:
+            feature_mean = None
+            feature_std = None
+        
+        if normalize_targets:
+            target_mean = train_targets.mean()
+            target_std = train_targets.std()
+            if target_std == 0:
+                target_std = 1.0
+        else:
+            target_mean = None
+            target_std = None
+        
+        # Create datasets with the SAME normalization stats for all splits
+        train_dataset = ChemicalDensityDataset(
+            features=train_features,
+            targets=train_targets,
+            normalize_features=normalize_features,
+            normalize_targets=normalize_targets,
+            feature_mean=feature_mean,
+            feature_std=feature_std,
+            target_mean=target_mean,
+            target_std=target_std,
         )
+        
+        val_dataset = ChemicalDensityDataset(
+            features=all_features[val_indices],
+            targets=all_targets[val_indices],
+            normalize_features=normalize_features,
+            normalize_targets=normalize_targets,
+            feature_mean=feature_mean,
+            feature_std=feature_std,
+            target_mean=target_mean,
+            target_std=target_std,
+        )
+        
+        test_dataset = ChemicalDensityDataset(
+            features=all_features[test_indices],
+            targets=all_targets[test_indices],
+            normalize_features=normalize_features,
+            normalize_targets=normalize_targets,
+            feature_mean=feature_mean,
+            feature_std=feature_std,
+            target_mean=target_mean,
+            target_std=target_std,
+        )
+        
+        # Store the full dataset for reference (for getting target_std)
+        full_dataset = train_dataset  # Return train dataset as full_dataset for backward compatibility
         
         # Create data loaders
         train_loader = DataLoader(
@@ -281,7 +337,7 @@ class ChemicalDensityDataLoader:
         Returns:
             Tuple of (features, targets) arrays of shape (n_samples, 4) and (n_samples,)
         """
-        df = pd.read_csv("Dataset.csv")
+        df = pd.read_csv("dataset_combined_cleaned_new.csv")
         
         # Extract features and targets
         features = df[["SigC", "SigH", "EpsC", "EpsH"]].values.astype(np.float32)

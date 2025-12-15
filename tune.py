@@ -1,15 +1,13 @@
 """Main hyperparameter tuning script using Optuna.
 
-This script runs hyperparameter optimization for any of the 4 model architectures:
+This script runs hyperparameter optimization for any of the 3 model architectures:
 - mlp: Multi-Layer Perceptron
 - cnn: Convolutional Neural Network
 - cnn_multiscale: Multi-Scale CNN
-- gnn: Graph Neural Network
 
 Usage:
     python tune.py --architecture mlp --n-trials 50 --max-epochs 100
     python tune.py --architecture cnn --config-type balanced
-    python tune.py --architecture gnn --n-trials 100 --sampler tpe
 """
 
 import argparse
@@ -35,6 +33,7 @@ class OptunaOptimizer:
         data_dir: str = ".",
         device: str = None,
         verbose: bool = True,
+        seed: int = 46,
     ):
         """Initialize the optimizer.
         
@@ -45,6 +44,7 @@ class OptunaOptimizer:
             data_dir: Directory containing dataset CSV files
             device: Device to use ("cuda" or "cpu", auto-detected if None)
             verbose: Whether to print detailed output
+            seed: Random seed for reproducibility (default: 46)
         """
         self.architecture = architecture
         self.n_trials = n_trials
@@ -52,6 +52,7 @@ class OptunaOptimizer:
         self.data_dir = data_dir
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.verbose = verbose
+        self.seed = seed
         
         # Create results directory
         self.results_dir = Path(f"./optuna_results_{architecture}_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
@@ -106,7 +107,7 @@ class OptunaOptimizer:
         elif pruner_type == "noop":
             pruner = optuna.pruners.NopPruner()
         elif pruner_type == "percentile":
-            pruner = optuna.pruners.PercentilePruner()
+            pruner = optuna.pruners.PercentilePruner(percentile=30.0)
         else:
             raise ValueError(f"Unknown pruner type: {pruner_type}")
         
@@ -128,6 +129,7 @@ class OptunaOptimizer:
             self.data_dir,
             self.device,
             suggest_fn,
+            seed=self.seed,
         )
         
         # Run optimization
@@ -166,14 +168,25 @@ class OptunaOptimizer:
         print(f"OPTIMIZATION COMPLETE!")
         print(f"{'='*80}")
         print(f"Best Trial Number: {best_trial.number}")
-        print(f"Best Validation RMSE: {best_trial.value:.6f}")
+        print(f"Best Validation RMSE (normalized): {best_trial.value:.6f}")
         
-        # Safely format test RMSE denorm
+        # Get denormalized values
+        target_std = best_trial.user_attrs.get('target_std', None)
+        val_rmse_denorm = best_trial.user_attrs.get('val_rmse_denorm', None)
         test_rmse_denorm = best_trial.user_attrs.get('test_rmse_denorm', None)
+        
+        if val_rmse_denorm is not None and not (isinstance(val_rmse_denorm, float) and val_rmse_denorm == float('inf')):
+            print(f"Best Validation RMSE (denorm): {val_rmse_denorm:.2f} kg/m³")
+        else:
+            print(f"Best Validation RMSE (denorm): N/A")
+        
         if test_rmse_denorm is not None and not (isinstance(test_rmse_denorm, float) and test_rmse_denorm == float('inf')):
             print(f"Best Test RMSE (denorm): {test_rmse_denorm:.2f} kg/m³")
         else:
             print(f"Best Test RMSE (denorm): N/A")
+        
+        if target_std is not None:
+            print(f"Target Std Dev: {target_std:.2f} kg/m³")
         
         print(f"Total Trials: {len(study.trials)}")
         print(f"Completed Trials: {len([t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE])}")
@@ -289,7 +302,7 @@ Examples:
         "--architecture",
         type=str,
         default="mlp",
-        choices=["mlp", "cnn", "cnn_multiscale", "gnn"],
+        choices=["mlp", "cnn", "cnn_multiscale", "lightgbm"],
         help="Model architecture to tune (default: mlp)",
     )
     
@@ -353,6 +366,14 @@ Examples:
         help="Number of parallel jobs (default: 1)",
     )
     
+    # Random seed
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=46,
+        help="Random seed for reproducibility (default: 46)",
+    )
+    
     # Logging
     parser.add_argument(
         "--verbose",
@@ -394,6 +415,7 @@ def main():
         data_dir=args.data_dir,
         device=args.device,
         verbose=verbose,
+        seed=args.seed,
     )
     
     # Run optimization

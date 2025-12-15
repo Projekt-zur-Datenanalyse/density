@@ -14,26 +14,8 @@ def analyze_data_ranges(data_dir: str = "."):
     """
     data_loader = ChemicalDensityDataLoader(data_dir)
     
-    # Auto-discover dataset files
-    dataset_paths = sorted(Path(data_dir).glob("Dataset_*.csv"))
-    dataset_paths = [str(p) for p in dataset_paths]
-    
-    if not dataset_paths:
-        print("ERROR: No Dataset_*.csv files found!")
-        return
-    
-    # Load all data
-    all_features = []
-    all_targets = []
-    
-    for dataset_path in dataset_paths:
-        features, targets = data_loader._load_single_dataset(dataset_path)
-        all_features.append(features)
-        all_targets.append(targets)
-    
-    # Combine all datasets
-    all_features = np.concatenate(all_features, axis=0)
-    all_targets = np.concatenate(all_targets, axis=0)
+    # Load data using the unified dataset loader (supports new format)
+    all_features, all_targets = data_loader._load_unified_dataset()
     
     feature_names = ["SigC", "SigH", "EpsC", "EpsH"]
     
@@ -42,38 +24,66 @@ def analyze_data_ranges(data_dir: str = "."):
     print("=" * 80)
     
     # Feature ranges
-    print("\nFEATURE RANGES:")
+    print("\nFEATURE RANGES & STATISTICS:")
     print("-" * 80)
     for i, name in enumerate(feature_names):
         min_val = all_features[:, i].min()
         max_val = all_features[:, i].max()
         mean_val = all_features[:, i].mean()
         std_val = all_features[:, i].std()
+        median_val = np.median(all_features[:, i])
         range_val = max_val - min_val
+        q1 = np.percentile(all_features[:, i], 25)
+        q3 = np.percentile(all_features[:, i], 75)
+        iqr = q3 - q1
+        cv = (std_val / mean_val) * 100  # Coefficient of variation
         
         print(f"\n{name}:")
-        print(f"  Min:   {min_val:.6f}")
-        print(f"  Max:   {max_val:.6f}")
-        print(f"  Range: {range_val:.6f}")
-        print(f"  Mean:  {mean_val:.6f}")
-        print(f"  Std:   {std_val:.6f}")
+        print(f"  Min:        {min_val:.6f}")
+        print(f"  Q1 (25%):   {q1:.6f}")
+        print(f"  Median:     {median_val:.6f}")
+        print(f"  Mean:       {mean_val:.6f}")
+        print(f"  Q3 (75%):   {q3:.6f}")
+        print(f"  Max:        {max_val:.6f}")
+        print(f"  ---")
+        print(f"  Range:      {range_val:.6f}")
+        print(f"  IQR:        {iqr:.6f}")
+        print(f"  Std Dev:    {std_val:.6f}")
+        print(f"  Variance:   {std_val**2:.6f}")
+        print(f"  Coeff. Var: {cv:.2f}%")
+        print(f"  Skewness:   {np.mean((all_features[:, i] - mean_val)**3) / (std_val**3):.6f}")
     
     # Target (Density) range
     print("\n" + "-" * 80)
-    print("\nTARGET (DENSITY) RANGE:")
+    print("\nTARGET (DENSITY) RANGE & STATISTICS:")
     print("-" * 80)
     target_min = all_targets.min()
     target_max = all_targets.max()
     target_range = target_max - target_min
     target_mean = all_targets.mean()
     target_std = all_targets.std()
+    target_median = np.median(all_targets)
+    target_q1 = np.percentile(all_targets, 25)
+    target_q3 = np.percentile(all_targets, 75)
+    target_iqr = target_q3 - target_q1
+    target_cv = (target_std / target_mean) * 100
+    target_skew = np.mean((all_targets - target_mean)**3) / (target_std**3)
+    target_var = target_std ** 2
     
     print(f"\nDensity:")
-    print(f"  Min:   {target_min:.6f}")
-    print(f"  Max:   {target_max:.6f}")
-    print(f"  Range: {target_range:.6f}")
-    print(f"  Mean:  {target_mean:.6f}")
-    print(f"  Std:   {target_std:.6f}")
+    print(f"  Min:        {target_min:.2f}")
+    print(f"  Q1 (25%):   {target_q1:.2f}")
+    print(f"  Median:     {target_median:.2f}")
+    print(f"  Mean:       {target_mean:.2f}")
+    print(f"  Q3 (75%):   {target_q3:.2f}")
+    print(f"  Max:        {target_max:.2f}")
+    print(f"  ---")
+    print(f"  Range:      {target_range:.2f}")
+    print(f"  IQR:        {target_iqr:.2f}")
+    print(f"  Std Dev:    {target_std:.2f}")
+    print(f"  Variance:   {target_var:.2f}")
+    print(f"  Coeff. Var: {target_cv:.2f}%")
+    print(f"  Skewness:   {target_skew:.6f}")
     
     # RMSE interpretation
     print("\n" + "=" * 80)
@@ -108,13 +118,18 @@ def analyze_data_ranges(data_dir: str = "."):
     
     # Min/Max table for quick reference
     print("\n" + "-" * 80)
-    print("QUICK REFERENCE - MIN/MAX VALUES:")
+    print("QUICK REFERENCE - SUMMARY STATISTICS:")
     print("-" * 80)
-    print(f"\n{'Feature':<15} {'Min':<15} {'Max':<15} {'Range':<15}")
+    print(f"\n{'Feature':<12} {'Min':<12} {'Mean':<12} {'Std':<12} {'Max':<12} {'Coeff.Var':<12}")
     print("-" * 80)
     for i, name in enumerate(feature_names):
-        print(f"{name:<15} {all_features[:, i].min():<15.6f} {all_features[:, i].max():<15.6f} {all_features[:, i].max() - all_features[:, i].min():<15.6f}")
-    print(f"{'Density':<15} {target_min:<15.2f} {target_max:<15.2f} {target_range:<15.2f}")
+        feat_min = all_features[:, i].min()
+        feat_mean = all_features[:, i].mean()
+        feat_std = all_features[:, i].std()
+        feat_max = all_features[:, i].max()
+        feat_cv = (feat_std / feat_mean) * 100
+        print(f"{name:<12} {feat_min:<12.6f} {feat_mean:<12.6f} {feat_std:<12.6f} {feat_max:<12.6f} {feat_cv:<12.2f}%")
+    print(f"{'Density':<12} {target_min:<12.2f} {target_mean:<12.2f} {target_std:<12.2f} {target_max:<12.2f} {target_cv:<12.2f}%")
     
     return {
         'features': all_features,

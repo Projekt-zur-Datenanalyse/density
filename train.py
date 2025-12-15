@@ -13,6 +13,7 @@ import argparse
 from pathlib import Path
 import json
 import sys
+import numpy as np
 
 from config import ModelConfig, TrainingConfig
 from model import ChemicalDensitySurrogate
@@ -27,10 +28,10 @@ except ImportError:
     CNN_AVAILABLE = False
 
 try:
-    from gnn_model import GraphNeuralSurrogate
-    GNN_AVAILABLE = True
+    from lightgbm_model import LightGBMSurrogate
+    LIGHTGBM_AVAILABLE = True
 except ImportError:
-    GNN_AVAILABLE = False
+    LIGHTGBM_AVAILABLE = False
 
 
 def parse_arguments():
@@ -48,7 +49,7 @@ def parse_arguments():
         "--architecture",
         type=str,
         default=default_model_config.architecture,
-        choices=["mlp", "cnn", "cnn_multiscale", "gnn"],
+        choices=["mlp", "cnn", "cnn_multiscale", "lightgbm"],
         help=f"Model architecture to train (default: {default_model_config.architecture})",
     )
     
@@ -121,6 +122,12 @@ def parse_arguments():
     
     # Multi-Scale CNN configuration
     parser.add_argument(
+        "--cnn-ms-expansion-size",
+        type=int,
+        default=default_model_config.cnn_multiscale_expansion_size,
+        help=f"Spatial expansion size for Multi-Scale CNN (default: {default_model_config.cnn_multiscale_expansion_size})",
+    )
+    parser.add_argument(
         "--cnn-ms-num-scales",
         type=int,
         default=default_model_config.cnn_multiscale_num_scales,
@@ -133,25 +140,67 @@ def parse_arguments():
         help=f"Base channels per scale in Multi-Scale CNN (default: {default_model_config.cnn_multiscale_base_channels})",
     )
     
-    # GNN configuration
+    # LightGBM configuration
     parser.add_argument(
-        "--gnn-hidden-dim",
+        "--lgb-num-leaves",
         type=int,
-        default=default_model_config.gnn_hidden_dim,
-        help=f"Hidden dimension for GNN embeddings (default: {default_model_config.gnn_hidden_dim})",
+        default=default_model_config.lgb_num_leaves,
+        help=f"LightGBM - max leaves per tree (default: {default_model_config.lgb_num_leaves})",
     )
     parser.add_argument(
-        "--gnn-num-layers",
-        type=int,
-        default=default_model_config.gnn_num_layers,
-        help=f"Number of GNN layers (default: {default_model_config.gnn_num_layers})",
+        "--lgb-learning-rate",
+        type=float,
+        default=default_model_config.lgb_learning_rate,
+        help=f"LightGBM - learning rate (default: {default_model_config.lgb_learning_rate})",
     )
     parser.add_argument(
-        "--gnn-type",
+        "--lgb-num-boost-round",
+        type=int,
+        default=default_model_config.lgb_num_boost_round,
+        help=f"LightGBM - number of boosting rounds (default: {default_model_config.lgb_num_boost_round})",
+    )
+    parser.add_argument(
+        "--lgb-max-depth",
+        type=int,
+        default=default_model_config.lgb_max_depth,
+        help=f"LightGBM - max tree depth (default: {default_model_config.lgb_max_depth})",
+    )
+    parser.add_argument(
+        "--lgb-min-child-samples",
+        type=int,
+        default=default_model_config.lgb_min_child_samples,
+        help=f"LightGBM - min samples in leaf (default: {default_model_config.lgb_min_child_samples})",
+    )
+    parser.add_argument(
+        "--lgb-subsample",
+        type=float,
+        default=default_model_config.lgb_subsample,
+        help=f"LightGBM - subsample ratio (default: {default_model_config.lgb_subsample})",
+    )
+    parser.add_argument(
+        "--lgb-colsample-bytree",
+        type=float,
+        default=default_model_config.lgb_colsample_bytree,
+        help=f"LightGBM - feature subsample ratio (default: {default_model_config.lgb_colsample_bytree})",
+    )
+    parser.add_argument(
+        "--lgb-reg-alpha",
+        type=float,
+        default=default_model_config.lgb_reg_alpha,
+        help=f"LightGBM - L1 regularization (default: {default_model_config.lgb_reg_alpha})",
+    )
+    parser.add_argument(
+        "--lgb-reg-lambda",
+        type=float,
+        default=default_model_config.lgb_reg_lambda,
+        help=f"LightGBM - L2 regularization (default: {default_model_config.lgb_reg_lambda})",
+    )
+    parser.add_argument(
+        "--lgb-boosting-type",
         type=str,
-        default=default_model_config.gnn_type,
-        choices=["gcn", "gat", "graphconv"],
-        help=f"Type of GNN layer (default: {default_model_config.gnn_type})",
+        default=default_model_config.lgb_boosting_type,
+        choices=["gbdt", "rf", "dart", "goss"],
+        help=f"LightGBM - boosting type (default: {default_model_config.lgb_boosting_type})",
     )
     
     # Training configuration
@@ -267,8 +316,8 @@ def parse_arguments():
     parser.add_argument(
         "--seed",
         type=int,
-        default=42,
-        help="Random seed (default: 42)",
+        default=default_training_config.random_seed,
+        help=f"Random seed for reproducibility (default: {default_training_config.random_seed})",
     )
     parser.add_argument(
         "--output-dir",
@@ -315,16 +364,22 @@ def create_model(args, model_config: ModelConfig):
             dropout_rate=model_config.dropout_rate,
         )
     
-    elif architecture == "gnn":
-        if not GNN_AVAILABLE:
-            print("ERROR: GNN requires torch_geometric. Install with: pip install torch_geometric")
+    elif architecture == "lightgbm":
+        if not LIGHTGBM_AVAILABLE:
+            print("ERROR: LightGBM requires lightgbm package. Install with: pip install lightgbm")
             sys.exit(1)
-        model = GraphNeuralSurrogate(
-            num_node_features=model_config.input_dim,
-            hidden_dim=model_config.gnn_hidden_dim,
-            num_layers=model_config.gnn_num_layers,
-            gnn_type=model_config.gnn_type,
-            dropout_rate=model_config.dropout_rate,
+        model = LightGBMSurrogate(
+            num_leaves=model_config.lgb_num_leaves,
+            learning_rate=model_config.lgb_learning_rate,
+            num_boost_round=model_config.lgb_num_boost_round,
+            max_depth=model_config.lgb_max_depth,
+            min_child_samples=model_config.lgb_min_child_samples,
+            subsample=model_config.lgb_subsample,
+            colsample_bytree=model_config.lgb_colsample_bytree,
+            reg_alpha=model_config.lgb_reg_alpha,
+            reg_lambda=model_config.lgb_reg_lambda,
+            boosting_type=model_config.lgb_boosting_type,
+            metric=model_config.lgb_metric,
         )
     
     else:
@@ -343,10 +398,15 @@ def main():
     """Main training script."""
     args = parse_arguments()
     
-    # Set random seed
+    # Set random seed for reproducibility across all libraries
+    np.random.seed(args.seed)
     torch.manual_seed(args.seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed(args.seed)
+        torch.cuda.manual_seed_all(args.seed)  # For multi-GPU
+    # Ensure deterministic behavior (may slow down performance)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
     
     # Create output directory
     output_dir = Path(args.output_dir)
@@ -376,13 +436,20 @@ def main():
         cnn_use_batch_norm=not args.cnn_no_batch_norm,
         cnn_use_residual=not args.cnn_no_residual,
         # Multi-Scale CNN settings
-        cnn_multiscale_expansion_size=args.cnn_expansion_size,
+        cnn_multiscale_expansion_size=args.cnn_ms_expansion_size,
         cnn_multiscale_num_scales=args.cnn_ms_num_scales,
         cnn_multiscale_base_channels=args.cnn_ms_base_channels,
-        # GNN settings
-        gnn_hidden_dim=args.gnn_hidden_dim,
-        gnn_num_layers=args.gnn_num_layers,
-        gnn_type=args.gnn_type,
+        # LightGBM settings
+        lgb_num_leaves=args.lgb_num_leaves,
+        lgb_learning_rate=args.lgb_learning_rate,
+        lgb_num_boost_round=args.lgb_num_boost_round,
+        lgb_max_depth=args.lgb_max_depth,
+        lgb_min_child_samples=args.lgb_min_child_samples,
+        lgb_subsample=args.lgb_subsample,
+        lgb_colsample_bytree=args.lgb_colsample_bytree,
+        lgb_reg_alpha=args.lgb_reg_alpha,
+        lgb_reg_lambda=args.lgb_reg_lambda,
+        lgb_boosting_type=args.lgb_boosting_type,
         # Common settings
         dropout_rate=args.dropout_rate if hasattr(args, 'dropout_rate') else 0.2,
         device=args.device,
@@ -423,6 +490,7 @@ def main():
         validation_split=training_config.validation_split,
         test_split=training_config.test_split,
         batch_size=training_config.batch_size,
+        seed=args.seed,
     )
     
     # Store normalization stats
@@ -471,6 +539,9 @@ def main():
     mae = torch.mean(torch.abs(predictions - targets)).item()
     print(f"Test MAE: {mae:.6f}")
     
+    # Calculate validation metrics from best checkpoint
+    best_val_rmse = trainer.best_val_loss
+    
     # Denormalize if needed
     if training_config.normalize_outputs:
         predictions_denorm = dataset.denormalize_targets(predictions.numpy())
@@ -479,12 +550,54 @@ def main():
         # Calculate denormalized RMSE and MAE
         denorm_rmse = torch.sqrt(torch.mean((torch.from_numpy(predictions_denorm) - torch.from_numpy(targets_denorm)) ** 2)).item()
         denorm_mae = torch.mean(torch.abs(torch.from_numpy(predictions_denorm) - torch.from_numpy(targets_denorm))).item()
+        best_val_rmse_denorm = best_val_rmse * dataset.target_std
         
         print(f"Test RMSE (denormalized): {denorm_rmse:.6f}")
         print(f"Test MAE (denormalized): {denorm_mae:.6f}")
+        
+    else:
+        best_val_rmse_denorm = best_val_rmse
+        denorm_rmse_val = float(denorm_rmse)
+        denorm_mae_val = float(denorm_mae)
+    
+    # ===== METRICS SUMMARY =====
+    print("\n" + "=" * 80)
+    print("TRAINING SUMMARY - TRAIN/VAL/TEST METRICS")
+    print("=" * 80)
+    
+    # Extract best train RMSE
+    best_train_rmse = min(history['train_loss']) if history['train_loss'] else float('inf')
+    best_train_epoch = np.argmin(history['train_loss']) + 1 if history['train_loss'] else 0
+    best_val_epoch = np.argmin(history['val_loss']) + 1 if history['val_loss'] else 0
+    
+    print(f"\nData Split Information:")
+    print(f"  • Training samples: {len(train_loader.dataset)}")
+    print(f"  • Validation samples: {len(val_loader.dataset)}")
+    print(f"  • Test samples: {len(test_loader.dataset)}")
+    print(f"  • Total samples: {len(train_loader.dataset) + len(val_loader.dataset) + len(test_loader.dataset)}")
+    
+    print(f"\nNormalized RMSE (on 0-1 scale):")
+    print(f"  • Best Training RMSE: {best_train_rmse:.6f} (at epoch {best_train_epoch})")
+    print(f"  • Best Validation RMSE: {best_val_rmse:.6f} (at epoch {best_val_epoch})")
+    print(f"  • Final Test RMSE: {test_rmse:.6f}")
+    
+    if training_config.normalize_outputs:
+        print(f"\nDenormalized RMSE (in kg/m³):")
+        print(f"  • Best Validation RMSE: {best_val_rmse_denorm:.2f} kg/m³")
+        print(f"  • Final Test RMSE: {denorm_rmse:.2f} kg/m³")
+        print(f"  • Difference (Val-Test): {best_val_rmse_denorm - denorm_rmse:.2f} kg/m³")
+    
+    print(f"\nMetrics Interpretation:")
+    print(f"  [TRAIN RMSE] Used during training to compute gradients")
+    print(f"  [VAL RMSE]   Used to select best model checkpoint (prevents overfitting)")
+    print(f"  [TEST RMSE]  Used for final evaluation on unseen data (measures generalization)")
+    print(f"\nOptimal scenario: Train RMSE ~= Val RMSE ~= Test RMSE")
+    print(f"Large gap (Val >> Test) suggests validation set issues")
+    print(f"Large gap (Val << Test) suggests overfitting to validation set")
+    print("=" * 80 + "\n")
     
     # ===== SAVE RESULTS =====
-    print("\n[6] Saving results...")
+    print("[6] Saving results...")
     
     # Save model config
     with open(output_dir / "model_config.json", "w") as f:
@@ -504,11 +617,17 @@ def main():
     
     # Save test results
     results = {
-        'test_rmse': test_rmse,
+        'test_rmse': float(test_rmse),
+        'test_mae': float(mae),
         'predictions_shape': list(predictions.shape),
         'targets_shape': list(targets.shape),
         'num_test_samples': len(predictions),
     }
+    
+    if training_config.normalize_outputs:
+        results['test_rmse_denormalized'] = float(denorm_rmse)
+        results['test_mae_denormalized'] = float(denorm_mae)
+    
     with open(output_dir / "test_results.json", "w") as f:
         json.dump(results, f, indent=2)
     

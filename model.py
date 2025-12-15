@@ -66,71 +66,89 @@ class ChemicalDensitySurrogate(nn.Module):
             raise ValueError("Chemical density model should output 1 value (density)")
     
     def _build_network(self) -> nn.ModuleList:
-        """Build the network layers.
+        """Build the network layers with proper sequential dimension flow.
+        
+        Constructs layers that properly flow through dimensions:
+        - Each layer takes output of previous layer as input
+        - Expansion happens at each layer (via hidden_dim)
+        - Residuals added only when input_dim == output_dim
+        - Pre-normalization applied before each layer (MANDATORY for SwiGLU)
         
         Returns:
             List of layers in the network
         """
         layers = nn.ModuleList()
         
-        # Get dropout rate from config if available
+        # Get dropout rate and normalization settings from config
         dropout_rate = getattr(self.config, 'dropout_rate', 0.0)
+        # For SwiGLU, pre-normalization is MANDATORY
+        use_prenorm = self.use_swiglu or getattr(self.config, 'use_prenorm', False)
+        norm_type = getattr(self.config, 'norm_type', 'layer')
         
         # Case 1: Custom hidden layer dimensions provided
         if self.hidden_layer_dims is not None:
             if len(self.hidden_layer_dims) == 0:
-                # Empty array: direct projection from input to output
+                # Empty array: direct projection from input to output (no hidden layers)
                 layers.append(
                     MLPBlock(
                         input_dim=self.input_dim,
-                        hidden_dim=self.input_dim,  # Not used in this case but required
+                        hidden_dim=max(self.input_dim, self.output_dim),
                         output_dim=self.output_dim,
                         use_swiglu=self.use_swiglu,
                         dropout_rate=dropout_rate,
+                        use_prenorm=use_prenorm,
+                        norm_type=norm_type,
+                        residual=False,
                     )
                 )
             else:
-                # One or more hidden layers with specified dimensions
-                # First layer: input -> first hidden
-                layers.append(
-                    MLPBlock(
-                        input_dim=self.input_dim,
-                        hidden_dim=self.hidden_layer_dims[0],
-                        output_dim=self.hidden_layer_dims[0],
-                        use_swiglu=self.use_swiglu,
-                        dropout_rate=dropout_rate,
-                    )
-                )
+                # Build sequence of layers with proper dimension flow
+                # hidden_layer_dims defines the output dimension of each layer
+                # The hidden expansion happens within each MLPBlock
                 
-                # Intermediate layers: hidden -> hidden
-                for i in range(len(self.hidden_layer_dims) - 1):
-                    current_dim = self.hidden_layer_dims[i]
-                    next_dim = self.hidden_layer_dims[i + 1]
+                current_dim = self.input_dim
+                
+                for i, next_dim in enumerate(self.hidden_layer_dims):
+                    # Calculate expansion factor for this layer
+                    # Use expansion_factor if available, otherwise keep hidden roughly 2x
+                    expansion_factor = getattr(self.config, 'expansion_factor', 2.0)
+                    hidden_dim = max(current_dim, next_dim)
+                    hidden_dim = int(hidden_dim * expansion_factor)
+                    
                     layers.append(
                         MLPBlock(
                             input_dim=current_dim,
-                            hidden_dim=next_dim,
+                            hidden_dim=hidden_dim,
                             output_dim=next_dim,
                             use_swiglu=self.use_swiglu,
                             dropout_rate=dropout_rate,
+                            use_prenorm=use_prenorm,
+                            norm_type=norm_type,
+                            residual=True,  # Allow residual if dims match
                         )
                     )
+                    current_dim = next_dim
                 
-                # Last layer: last hidden -> output
+                # Final layer: last hidden dim -> output dim
+                expansion_factor = getattr(self.config, 'expansion_factor', 2.0)
+                hidden_dim = int(current_dim * expansion_factor)
                 layers.append(
                     MLPBlock(
-                        input_dim=self.hidden_layer_dims[-1],
-                        hidden_dim=self.hidden_layer_dims[-1],
+                        input_dim=current_dim,
+                        hidden_dim=hidden_dim,
                         output_dim=self.output_dim,
                         use_swiglu=self.use_swiglu,
                         dropout_rate=dropout_rate,
+                        use_prenorm=use_prenorm,
+                        norm_type=norm_type,
+                        residual=False,  # Usually we don't add residual to final output
                     )
                 )
         
         # Case 2: Use expansion_factor approach (backward compatible)
         else:
             if self.num_layers == 1:
-                # Single hidden layer: input -> hidden -> output
+                # Single block: input -> hidden -> output
                 layers.append(
                     MLPBlock(
                         input_dim=self.input_dim,
@@ -138,10 +156,13 @@ class ChemicalDensitySurrogate(nn.Module):
                         output_dim=self.output_dim,
                         use_swiglu=self.use_swiglu,
                         dropout_rate=dropout_rate,
+                        use_prenorm=use_prenorm,
+                        norm_type=norm_type,
+                        residual=False,
                     )
                 )
             else:
-                # First layer: input -> hidden
+                # First layer: input_dim -> hidden_dim
                 layers.append(
                     MLPBlock(
                         input_dim=self.input_dim,
@@ -149,10 +170,14 @@ class ChemicalDensitySurrogate(nn.Module):
                         output_dim=self.hidden_dim,
                         use_swiglu=self.use_swiglu,
                         dropout_rate=dropout_rate,
+                        use_prenorm=use_prenorm,
+                        norm_type=norm_type,
+                        residual=False,  # Can't have residual from different input dim
                     )
                 )
                 
-                # Intermediate layers: hidden -> hidden (with residual connections)
+                # Intermediate layers: hidden_dim -> hidden_dim (all same dimensions)
+                # This allows residual connections
                 for _ in range(self.num_layers - 2):
                     layers.append(
                         MLPBlock(
@@ -161,10 +186,13 @@ class ChemicalDensitySurrogate(nn.Module):
                             output_dim=self.hidden_dim,
                             use_swiglu=self.use_swiglu,
                             dropout_rate=dropout_rate,
+                            use_prenorm=use_prenorm,
+                            norm_type=norm_type,
+                            residual=True,  # Add residual between identical dimensions
                         )
                     )
                 
-                # Last layer: hidden -> output
+                # Last layer: hidden_dim -> output_dim
                 layers.append(
                     MLPBlock(
                         input_dim=self.hidden_dim,
@@ -172,6 +200,9 @@ class ChemicalDensitySurrogate(nn.Module):
                         output_dim=self.output_dim,
                         use_swiglu=self.use_swiglu,
                         dropout_rate=dropout_rate,
+                        use_prenorm=use_prenorm,
+                        norm_type=norm_type,
+                        residual=False,  # Usually no residual to different output dim
                     )
                 )
         
@@ -193,51 +224,14 @@ class ChemicalDensitySurrogate(nn.Module):
                 f"got {x.shape[-1]}"
             )
         
-        # Case 1: Custom hidden layer dimensions
-        if self.hidden_layer_dims is not None:
-            if len(self.hidden_layer_dims) == 0:
-                # Direct projection: input -> output
-                return self.layers[0](x)
-            else:
-                # One or more hidden layers
-                # Note: Residual connections only work when dimensions match
-                # For custom dims, only apply residuals where consecutive dims are identical
-                
-                out = self.layers[0](x)  # First layer: input -> first hidden
-                
-                # Apply intermediate layers with residual connections where possible
-                for i, layer in enumerate(self.layers[1:-1], 1):
-                    prev_out_dim = self.hidden_layer_dims[i - 1]
-                    curr_out_dim = self.hidden_layer_dims[i]
-                    
-                    # Only add residual connection if dimensions match
-                    if prev_out_dim == curr_out_dim:
-                        out = out + layer(out)
-                    else:
-                        out = layer(out)
-                
-                # Last layer: last hidden -> output
-                out = self.layers[-1](out)
-                
-                return out
+        # Forward pass through all layers sequentially
+        # Residual connections are now handled WITHIN each MLPBlock,
+        # so we simply pass the output of one layer to the next
+        out = x
+        for layer in self.layers:
+            out = layer(out)
         
-        # Case 2: Expansion factor approach (backward compatible)
-        else:
-            # Single layer case
-            if self.num_layers == 1:
-                return self.layers[0](x)
-            
-            # Multi-layer case with residual connections
-            out = self.layers[0](x)  # First layer projects from input to hidden
-            
-            # Apply intermediate layers with residual connections
-            for layer in self.layers[1:-1]:
-                out = out + layer(out)  # Add residual connection
-            
-            # Last layer projects to output
-            out = self.layers[-1](out)
-            
-            return out
+        return out
     
     def get_num_parameters(self) -> int:
         """Get the total number of trainable parameters.
