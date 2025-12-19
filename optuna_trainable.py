@@ -9,6 +9,7 @@ import torch.nn as nn
 from typing import Dict, Any, Tuple
 import logging
 
+from tune_config import OptunaSearchSpace
 from config import ModelConfig, TrainingConfig
 from model import ChemicalDensitySurrogate
 from data_loader import ChemicalDensityDataLoader
@@ -288,13 +289,16 @@ def create_objective(
     def objective(trial) -> float:
         """Objective function to minimize (validation RMSE)."""
         try:
+            # Generate a unique seed for this trial (not fixed for grid search)
+            trial_seed = OptunaSearchSpace.generate_trial_seed(seed, trial.number)
+            
             # Set random seed for reproducibility within each trial
             import numpy as np
-            np.random.seed(seed + trial.number)  # Vary seed per trial for diversity
-            torch.manual_seed(seed + trial.number)
+            np.random.seed(trial_seed)
+            torch.manual_seed(trial_seed)
             if torch.cuda.is_available():
-                torch.cuda.manual_seed(seed + trial.number)
-                torch.cuda.manual_seed_all(seed + trial.number)
+                torch.cuda.manual_seed(trial_seed)
+                torch.cuda.manual_seed_all(trial_seed)
             torch.backends.cudnn.deterministic = True
             torch.backends.cudnn.benchmark = False
             

@@ -245,6 +245,335 @@ def load_data_with_fixed_test_split(
     return train_loader, val_loader, test_loader, X_test, y_test, norm_stats
 
 
+class TunedDeepEnsemble:
+    """Deep Ensemble trained with n-best tuned hyperparameter configurations.
+    
+    This class trains an ensemble using the top n configurations from Optuna tuning,
+    enabling improved performance compared to base config ensembles.
+    
+    Supports same-architecture ensembles using different tuned configs.
+    """
+    
+    def __init__(
+        self,
+        optuna_results_dir: str,
+        architecture: str,
+        output_dir: str = "./tuned_ensemble_results",
+        device: str = None,
+        max_epochs: int = 100,
+        data_dir: str = ".",
+        master_seed: int = 46,
+    ):
+        """Initialize tuned deep ensemble.
+        
+        Args:
+            optuna_results_dir: Directory containing Optuna tuning results with configs
+            architecture: Model architecture for ensemble (must match Optuna results)
+            output_dir: Directory to save ensemble results
+            device: Device for training ("cuda" or "cpu", auto-detect if None)
+            max_epochs: Maximum epochs for training
+            data_dir: Directory containing dataset
+            master_seed: Master seed for fixed test split
+        """
+        self.optuna_results_dir = Path(optuna_results_dir)
+        self.architecture = architecture
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.max_epochs = max_epochs
+        self.data_dir = data_dir
+        self.master_seed = master_seed
+        
+        # Load tuned configs
+        from optuna_manager import OptunaResultsHandler
+        self.results_handler = OptunaResultsHandler(self.optuna_results_dir)
+        self.tuned_configs = self.results_handler.load_n_best_configs()
+        
+        # Verify architecture matches
+        if self.tuned_configs and self.tuned_configs[0]['architecture'] != architecture:
+            raise ValueError(
+                f"Architecture mismatch: expected {architecture}, "
+                f"but Optuna results are for {self.tuned_configs[0]['architecture']}"
+            )
+        
+        self.models: List[Any] = []
+        self.model_configs: List[Dict] = []
+        self.normalization_stats: List[Dict] = []
+        self.training_histories: List[Dict] = []
+        self.predictions_list: List[np.ndarray] = []
+        self.uncertainties_list: List[np.ndarray] = []
+    
+    def train_tuned_ensemble(
+        self,
+        n_models: Optional[int] = None,
+        batch_size: int = 32,
+        train_ratio: float = 0.75,
+        val_ratio: float = 0.20,
+        test_ratio: float = 0.05,
+        show_progress: bool = True,
+    ) -> Dict:
+        """Train ensemble using n-best tuned configs.
+        
+        Args:
+            n_models: Number of best configs to use (None = use all available, max 5)
+            batch_size: Batch size for training
+            train_ratio: Ratio for training
+            val_ratio: Ratio for validation
+            test_ratio: Ratio for testing (fixed across all models)
+            show_progress: Whether to show progress
+            
+        Returns:
+            Dictionary with training results and metrics
+        """
+        # Determine how many models to train
+        n_available = len(self.tuned_configs)
+        if n_models is None:
+            n_models = min(n_available, 5)
+        else:
+            n_models = min(n_models, n_available)
+        
+        configs_to_use = self.tuned_configs[:n_models]
+        
+        print(f"\n{'='*80}")
+        print(f"TUNED DEEP ENSEMBLE")
+        print(f"{'='*80}")
+        print(f"Architecture: {self.architecture.upper()}")
+        print(f"N Models: {n_models}")
+        print(f"Tuned Configs Available: {n_available}")
+        print(f"Max Epochs: {self.max_epochs}")
+        print(f"Device: {self.device.upper()}")
+        print(f"Output Dir: {self.output_dir}")
+        print(f"{'='*80}\n")
+        
+        # Train each model with a tuned config
+        for rank, config in enumerate(configs_to_use, 1):
+            print(f"\n{'-'*80}")
+            print(f"Training Model {rank}/{n_models} (Config Rank {config['rank']})")
+            print(f"{'-'*80}")
+            print(f"Validation RMSE: {config['validation_value']:.6f}")
+            if 'test_rmse_denorm' in config['user_attrs']:
+                print(f"Test RMSE: {config['user_attrs']['test_rmse_denorm']:.2f} kg/m³")
+            
+            # Train model with this config
+            self._train_model_with_config(config, batch_size, train_ratio, val_ratio, test_ratio, rank)
+        
+        # Evaluate ensemble
+        results = self._evaluate_ensemble()
+        
+        print(f"\n{'='*80}")
+        print(f"ENSEMBLE EVALUATION RESULTS")
+        print(f"{'='*80}")
+        print(f"N Models: {len(self.models)}")
+        print(f"Mean Test RMSE (denorm): {results['mean_test_rmse_denorm']:.2f} kg/m³")
+        print(f"Std Test RMSE (denorm): {results['std_test_rmse_denorm']:.2f} kg/m³")
+        print(f"Ensemble Test RMSE (mean pred): {results['ensemble_test_rmse_denorm']:.2f} kg/m³")
+        print(f"Mean Test MAE (denorm): {results['mean_test_mae_denorm']:.2f} kg/m³")
+        print(f"Ensemble Test MAE (mean pred): {results['ensemble_test_mae_denorm']:.2f} kg/m³")
+        print(f"{'='*80}\n")
+        
+        # Save results
+        self._save_ensemble_results(results)
+        
+        return results
+    
+    def _train_model_with_config(
+        self,
+        config: Dict,
+        batch_size: int,
+        train_ratio: float,
+        val_ratio: float,
+        test_ratio: float,
+        model_idx: int,
+    ):
+        """Train a single model with tuned hyperparameters.
+        
+        Args:
+            config: Tuned configuration dictionary
+            batch_size: Batch size for training
+            train_ratio: Training ratio
+            val_ratio: Validation ratio
+            test_ratio: Test ratio
+            model_idx: Index of this model in ensemble
+        """
+        # Use the seed from config for this model
+        model_seed = config['seed']
+        train_val_seed = model_seed + model_idx * 1000  # Vary train/val split per model
+        
+        # Load data with fixed test split
+        train_loader, val_loader, test_loader, X_test, y_test, norm_stats = load_data_with_fixed_test_split(
+            data_dir=self.data_dir,
+            master_seed=self.master_seed,
+            train_val_seed=train_val_seed,
+            train_ratio=train_ratio,
+            val_ratio=val_ratio,
+            test_ratio=test_ratio,
+            batch_size=batch_size,
+        )
+        
+        # Set random seed for reproducibility
+        set_all_seeds(model_seed)
+        
+        # Create model from config
+        from optuna_trainable import create_model_from_hyperparams
+        model = create_model_from_hyperparams(
+            config['params'],
+            self.architecture,
+            device=self.device,
+        )
+        
+        if isinstance(model, torch.nn.Module):
+            model = model.to(self.device)
+        
+        # Train model using ModelTrainer
+        trainer = ModelTrainer(
+            model,
+            device=self.device,
+            checkpoint_dir=str(self.output_dir / f"checkpoints_model_{model_idx}"),
+        )
+        
+        # Extract training hyperparameters
+        hyperparams = config['params']
+        learning_rate = float(hyperparams.get("learning_rate", 0.01))
+        weight_decay = float(hyperparams.get("weight_decay", 1e-5))
+        optimizer_name = hyperparams.get("optimizer", "adam")
+        scheduler_name = hyperparams.get("lr_scheduler", "cosine")
+        loss_fn = hyperparams.get("loss_fn", "mse")
+        
+        # Train using ModelTrainer's train method
+        print(f"Training Model {model_idx} with config rank {config['rank']}...")
+        history = trainer.train(
+            train_loader=train_loader,
+            val_loader=val_loader,
+            num_epochs=self.max_epochs,
+            learning_rate=learning_rate,
+            optimizer_name=optimizer_name,
+            loss_name=loss_fn,
+            weight_decay=weight_decay,
+            scheduler_name=scheduler_name,
+            cosine_t_max=self.max_epochs,
+            show_progress_bar=True,
+        )
+        
+        # Test
+        # Create criterion for testing
+        if loss_fn == "mse":
+            criterion = torch.nn.MSELoss()
+        elif loss_fn == "mae":
+            criterion = torch.nn.L1Loss()
+        else:
+            criterion = torch.nn.MSELoss()
+        
+        test_rmse, predictions, targets = trainer.test(test_loader, criterion)
+        test_rmse_denorm = test_rmse * norm_stats['target_std']
+        test_mae = torch.mean(torch.abs(predictions - targets)).item() * norm_stats['target_std']
+        
+        print(f"  [OK] Test RMSE: {test_rmse_denorm:.2f} kg/m^3")
+        
+        # Store model and metadata
+        self.models.append(model)
+        self.model_configs.append(config)
+        self.normalization_stats.append(norm_stats)
+        self.training_histories.append(history)
+        
+        # Store predictions for ensemble
+        self.predictions_list.append(predictions.detach().cpu().numpy())
+    
+    def _evaluate_ensemble(self) -> Dict:
+        """Evaluate ensemble performance.
+        
+        Returns:
+            Dictionary with ensemble metrics
+        """
+        if not self.predictions_list:
+            raise ValueError("No models trained yet")
+        
+        # Stack predictions
+        all_predictions = np.array(self.predictions_list)  # Shape: (n_models, n_samples, 1)
+        all_predictions = all_predictions.squeeze(-1)  # Shape: (n_models, n_samples)
+        
+        # Use first model's normalization stats for denormalization
+        norm_stats = self.normalization_stats[0]
+        target_mean = norm_stats['target_mean']
+        target_std = norm_stats['target_std']
+        
+        # Compute ensemble predictions
+        ensemble_predictions = np.mean(all_predictions, axis=0)  # Shape: (n_samples,)
+        ensemble_uncertainties = np.std(all_predictions, axis=0)  # Shape: (n_samples,)
+        
+        # Get test targets (same for all models due to fixed test split)
+        # Need to reload test data to get targets
+        _, _, test_loader, _, _, _ = load_data_with_fixed_test_split(
+            data_dir=self.data_dir,
+            master_seed=self.master_seed,
+            train_val_seed=self.master_seed,
+            batch_size=32,
+        )
+        
+        all_targets = []
+        for X_batch, y_batch in test_loader:
+            all_targets.append(y_batch.numpy().squeeze())
+        all_targets = np.concatenate(all_targets)
+        
+        # Denormalize
+        ensemble_predictions_denorm = ensemble_predictions * target_std + target_mean
+        all_targets_denorm = all_targets * target_std + target_mean
+        individual_predictions_denorm = all_predictions * target_std + target_mean
+        
+        # Compute metrics
+        ensemble_rmse_denorm = np.sqrt(np.mean((ensemble_predictions_denorm - all_targets_denorm) ** 2))
+        ensemble_mae_denorm = np.mean(np.abs(ensemble_predictions_denorm - all_targets_denorm))
+        
+        individual_rmses = np.sqrt(np.mean((individual_predictions_denorm - all_targets_denorm) ** 2, axis=1))
+        individual_maes = np.mean(np.abs(individual_predictions_denorm - all_targets_denorm), axis=1)
+        
+        results = {
+            "n_models": len(self.models),
+            "ensemble_test_rmse_denorm": float(ensemble_rmse_denorm),
+            "ensemble_test_mae_denorm": float(ensemble_mae_denorm),
+            "mean_test_rmse_denorm": float(np.mean(individual_rmses)),
+            "std_test_rmse_denorm": float(np.std(individual_rmses)),
+            "mean_test_mae_denorm": float(np.mean(individual_maes)),
+            "std_test_mae_denorm": float(np.std(individual_maes)),
+            "mean_uncertainty": float(np.mean(ensemble_uncertainties)),
+            "std_uncertainty": float(np.std(ensemble_uncertainties)),
+            "individual_rmses": individual_rmses.tolist(),
+            "individual_maes": individual_maes.tolist(),
+        }
+        
+        return results
+    
+    def _save_ensemble_results(self, results: Dict):
+        """Save ensemble results to disk.
+        
+        Args:
+            results: Dictionary with results
+        """
+        # Save results
+        results_file = self.output_dir / "tuned_ensemble_results.json"
+        with open(results_file, 'w') as f:
+            json.dump(results, f, indent=2)
+        
+        # Save full configs (for model reconstruction)
+        configs_full = []
+        for config in self.model_configs:
+            configs_full.append({
+                "rank": config["rank"],
+                "trial_number": config["trial_number"],
+                "validation_value": config["validation_value"],
+                "seed": config["seed"],
+                "architecture": self.architecture,
+                "params": config.get("params", {}),
+                "user_attrs": config.get("user_attrs", {}),
+            })
+        
+        configs_file = self.output_dir / "ensemble_configs_used.json"
+        with open(configs_file, 'w') as f:
+            json.dump(configs_full, f, indent=2)
+        
+        print(f"\n✓ Results saved to: {results_file}")
+        print(f"✓ Configs summary saved to: {configs_file}")
+
+
 class DeepEnsemble:
     """Deep Ensemble for uncertainty-aware predictions."""
     
@@ -762,7 +1091,33 @@ Examples:
   
   # Use custom seeds and epochs
   python deep_ensemble.py --architectures mlp --num-models 8 --master-seed 42 --epochs 200
+  
+  # Train tuned ensemble from Optuna results (recommended)
+  python deep_ensemble.py --optuna-results optuna_results_mlp_20251217_032124 --n-models 5
+  
+  # Train tuned ensemble with custom epochs
+  python deep_ensemble.py --optuna-results optuna_results_cnn_* --n-models 8 --max-epochs 150
         """
+    )
+    
+    # Tuned ensemble settings (optional alternative to base ensemble)
+    parser.add_argument(
+        "--optuna-results",
+        type=str,
+        default=None,
+        help="Path to Optuna results directory for tuned ensemble training"
+    )
+    parser.add_argument(
+        "--n-models",
+        type=int,
+        default=5,
+        help="Number of best tuned configs to use (for --optuna-results, default: 5)"
+    )
+    parser.add_argument(
+        "--max-epochs",
+        type=int,
+        default=100,
+        help="Maximum epochs per model (for --optuna-results, default: 100)"
     )
     
     # Architecture and ensemble settings
@@ -828,14 +1183,14 @@ Examples:
     parser.add_argument(
         "--train-split",
         type=float,
-        default=0.75,
-        help="Training split ratio (default: 0.75)"
+        default=0.80,
+        help="Training split ratio (default: 0.80)"
     )
     parser.add_argument(
         "--val-split",
         type=float,
-        default=0.20,
-        help="Validation split ratio (default: 0.20)"
+        default=0.15,
+        help="Validation split ratio (default: 0.15)"
     )
     parser.add_argument(
         "--test-split",
@@ -895,6 +1250,50 @@ def main():
     """Main entry point."""
     args = parse_arguments()
     
+    # Check if training tuned ensemble from Optuna results
+    if args.optuna_results:
+        # Train tuned ensemble
+        from optuna_manager import OptunaResultsHandler
+        
+        # Load optuna results to determine architecture
+        results_handler = OptunaResultsHandler(Path(args.optuna_results))
+        tuned_configs = results_handler.load_n_best_configs()
+        
+        if not tuned_configs:
+            print(f"Error: No configs found in {args.optuna_results}")
+            return
+        
+        architecture = tuned_configs[0]['architecture']
+        
+        print(f"\n{'='*80}")
+        print(f"TRAINING TUNED DEEP ENSEMBLE FROM OPTUNA RESULTS")
+        print(f"{'='*80}")
+        print(f"Optuna Results: {args.optuna_results}")
+        print(f"Architecture: {architecture}")
+        print(f"N Models: {args.n_models}")
+        print(f"Max Epochs: {args.max_epochs}")
+        print(f"{'='*80}\n")
+        
+        ensemble = TunedDeepEnsemble(
+            optuna_results_dir=args.optuna_results,
+            architecture=architecture,
+            max_epochs=args.max_epochs,
+            data_dir=args.data_dir,
+            device="cuda" if torch.cuda.is_available() else "cpu",
+        )
+        
+        results = ensemble.train_tuned_ensemble(
+            n_models=args.n_models,
+            batch_size=args.batch_size,
+            train_ratio=args.train_split,
+            val_ratio=args.val_split,
+            test_ratio=args.test_split,
+        )
+        
+        print(f"\nResults saved to: {ensemble.output_dir}")
+        return
+    
+    # Train base ensemble (original behavior)
     # Create timestamp for output directory
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     arch_str = "_".join(args.architectures)

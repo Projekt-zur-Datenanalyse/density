@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Dict, Any, Callable
 import optuna
 from optuna.trial import Trial
+import numpy as np
 
 
 @dataclass
@@ -19,26 +20,66 @@ class OptunaSearchSpace:
     """Base class for defining hyperparameter search spaces for Optuna."""
     
     @staticmethod
+    def generate_trial_seed(master_seed: int, trial_number: int) -> int:
+        """Generate a seed for a specific trial.
+        
+        This ensures different trials get different random initializations,
+        especially important for grid search where sampler seed is not used.
+        
+        Args:
+            master_seed: Base seed for reproducibility
+            trial_number: Trial number from Optuna
+            
+        Returns:
+            Unique seed for this trial
+        """
+        # Use numpy random to generate a unique seed from master_seed + trial_number
+        # This is deterministic and different for each trial
+        rng = np.random.RandomState(master_seed + trial_number * 1000)
+        return int(rng.randint(0, 2**31 - 1))
+    
+    @staticmethod
     def suggest_mlp_hyperparameters(trial: Trial) -> Dict[str, Any]:
         """Suggest MLP hyperparameters for an Optuna trial.
+        
+        Uses flexible layer architecture based on num_layers:
+        - 1 layer: [expand]
+        - 2 layers: [expand, compress]
+        - 3 layers: [expand, base, compress]
+        - 4 layers: [base, expand, base, compress]
+        - 5 layers: [base, expand, base, base, compress]
         
         Args:
             trial: Optuna trial object
             
         Returns:
-            Dictionary of suggested hyperparameters with fixed 5-layer architecture
+            Dictionary of suggested hyperparameters with flexible layer structure
         """
         base = trial.suggest_categorical("base_dim", [16, 32, 64, 128, 256])
         expand_factor = trial.suggest_float("expand_factor", 2, 6)
         compress_factor = trial.suggest_categorical("compress_factor", [2, 4, 8])
+        num_layers = trial.suggest_int("num_layers", 1, 5)
 
-        h1 = base
-        h2 = int(base * expand_factor)
-        h3 = base
-        h4 = max(base // compress_factor, 8)
+        # Calculate layer dimensions
+        expand_dim = int(base * expand_factor)
+        compress_dim = max(base // compress_factor, 8)
+        
+        # Construct hidden layer dims based on num_layers
+        if num_layers == 1:
+            hidden_layer_dims = [expand_dim]
+        elif num_layers == 2:
+            hidden_layer_dims = [expand_dim, compress_dim]
+        elif num_layers == 3:
+            hidden_layer_dims = [expand_dim, base, compress_dim]
+        elif num_layers == 4:
+            hidden_layer_dims = [base, expand_dim, base, compress_dim]
+        elif num_layers == 5:
+            hidden_layer_dims = [base, expand_dim, base, base, compress_dim]
+        else:
+            raise ValueError(f"num_layers must be between 1 and 5, got {num_layers}")
 
         return {
-            "hidden_layer_dims": [h1, h2, h3, h4],
+            "hidden_layer_dims": hidden_layer_dims,
             "use_swiglu": trial.suggest_categorical("use_swiglu", [True, False]),
             "learning_rate": trial.suggest_float("learning_rate", 1e-4, 5e-3, log=True),
             "batch_size": trial.suggest_categorical("batch_size", [32, 64, 128]),
