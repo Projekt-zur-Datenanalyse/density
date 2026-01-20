@@ -1,7 +1,12 @@
 """
-Convolutional Neural Network (CNN) architecture for chemical density prediction.
-Expands the tiny 4-feature input and applies convolutional operations
-to learn hierarchical feature representations.
+Convolutional Neural Network (CNN) architectures for chemical density prediction.
+
+This module provides CNN-based models that expand the small input feature space
+into a spatial representation for convolutional processing.
+
+Models:
+- CNN: Standard convolutional network with residual connections
+- MultiScaleCNN: Inception-style multi-scale convolutional network
 """
 
 import torch
@@ -9,70 +14,68 @@ import torch.nn as nn
 from typing import List, Optional
 
 
-class ConvolutionalSurrogate(nn.Module):
+class CNN(nn.Module):
     """CNN-based surrogate model for chemical density prediction.
     
     Strategy: Expand 4 features into a spatial representation, then apply
     1D/2D convolutions to learn complex feature interactions at multiple scales.
     
     Approach:
-    1. Expand 4 features into a 2D grid (e.g., 2x2, 4x4, etc.)
-    2. Apply multiple convolutional layers with different kernel sizes
-    3. Use residual connections and batch normalization
+    1. Expand 4 features into a 2D grid (e.g., 8x8 = 64 values)
+    2. Apply multiple convolutional layers with same kernel size
+    3. Use residual connections and optional batch normalization
     4. Global pooling to aggregate spatial information
     5. Fully connected output layers
     """
     
     def __init__(
         self,
-        num_input_features: int = 4,
-        expansion_size: int = 8,  # Expand 4 features to 8x8 grid
-        num_conv_layers: int = 4,
-        conv_channels: List[int] = None,
+        input_dim: int = 4,
+        output_dim: int = 1,
+        expansion_size: int = 8,
+        num_layers: int = 4,
+        conv_channels: Optional[List[int]] = None,
         kernel_size: int = 3,
-        use_batch_norm: bool = True,
+        use_batch_norm: bool = False,
         use_residual: bool = True,
         dropout_rate: float = 0.2,
-        output_dim: int = 1,
     ):
         """Initialize CNN surrogate model.
         
         Args:
-            num_input_features: Number of input features (4 for SigC, SigH, EpsC, EpsH)
-            expansion_size: Size to expand features to (e.g., 8 means 8x8 grid = 64 values)
-            num_conv_layers: Number of convolutional layers
+            input_dim: Number of input features (default: 4)
+            output_dim: Output dimension (default: 1 for density)
+            expansion_size: Size to expand features to (e.g., 8 means 8x8 grid)
+            num_layers: Number of convolutional layers
             conv_channels: List of channel sizes for each conv layer
-            kernel_size: Kernel size for convolutions
+            kernel_size: Kernel size for convolutions (must be odd)
             use_batch_norm: Whether to use batch normalization
             use_residual: Whether to use residual connections
             dropout_rate: Dropout rate for regularization
-            output_dim: Output dimension (1 for density)
         """
         super().__init__()
         
-        self.num_input_features = num_input_features
+        self.input_dim = input_dim
+        self.output_dim = output_dim
         self.expansion_size = expansion_size
-        self.num_conv_layers = num_conv_layers
+        self.num_layers = num_layers
         self.use_batch_norm = use_batch_norm
         self.use_residual = use_residual
         self.dropout_rate = dropout_rate
-        self.output_dim = output_dim
         
         # Default channel progression
         if conv_channels is None:
-            conv_channels = [16, 32, 64, 128, 256][:num_conv_layers]
-            if len(conv_channels) < num_conv_layers:
-                # Extend if needed
+            conv_channels = [16, 32, 64, 128, 256][:num_layers]
+            if len(conv_channels) < num_layers:
                 last_channels = conv_channels[-1] if conv_channels else 16
-                conv_channels.extend([last_channels] * (num_conv_layers - len(conv_channels)))
+                conv_channels.extend([last_channels] * (num_layers - len(conv_channels)))
         
         self.conv_channels = conv_channels
         
         # Feature expansion layer
-        # Expand 4 features to a spatial grid
         expanded_size = expansion_size * expansion_size
         self.expand = nn.Sequential(
-            nn.Linear(num_input_features, expanded_size),
+            nn.Linear(input_dim, expanded_size),
             nn.BatchNorm1d(expanded_size) if use_batch_norm else nn.Identity(),
             nn.SiLU(),
         )
@@ -85,7 +88,6 @@ class ConvolutionalSurrogate(nn.Module):
         
         in_channels = 1
         for i, out_channels in enumerate(conv_channels):
-            # Conv layer with padding to maintain spatial dimensions
             padding = kernel_size // 2
             self.conv_layers.append(
                 nn.Conv2d(
@@ -93,18 +95,14 @@ class ConvolutionalSurrogate(nn.Module):
                     out_channels,
                     kernel_size=kernel_size,
                     padding=padding,
-                    bias=not use_batch_norm,  # No bias if using batch norm
+                    bias=not use_batch_norm,
                 )
             )
             
-            # Batch norm (optional)
             if use_batch_norm:
                 self.batch_norm_layers.append(nn.BatchNorm2d(out_channels))
             
-            # Activation
             self.activation_layers.append(nn.ReLU())
-            
-            # Dropout
             self.dropout_layers.append(nn.Dropout2d(dropout_rate))
             
             in_channels = out_channels
@@ -124,16 +122,15 @@ class ConvolutionalSurrogate(nn.Module):
         """Forward pass through CNN.
         
         Args:
-            x: Input tensor of shape (batch_size, 4)
+            x: Input tensor of shape (batch_size, input_dim)
         
         Returns:
-            Output tensor of shape (batch_size, 1)
+            Output tensor of shape (batch_size, output_dim)
         """
         batch_size = x.shape[0]
-        device = x.device
         
         # Expand features to spatial grid
-        x_expanded = self.expand(x)  # (batch_size, expansion_size^2)
+        x_expanded = self.expand(x)
         x_spatial = x_expanded.view(batch_size, 1, self.expansion_size, self.expansion_size)
         
         # Apply convolutional layers with residual connections
@@ -154,74 +151,91 @@ class ConvolutionalSurrogate(nn.Module):
             x_conv = x_conv_out
         
         # Global average pooling
-        x_pooled = self.global_pool(x_conv)  # (batch_size, channels, 1, 1)
-        x_pooled = x_pooled.view(batch_size, -1)  # (batch_size, channels)
+        x_pooled = self.global_pool(x_conv)
+        x_pooled = x_pooled.view(batch_size, -1)
         
         # Output projection
-        output = self.output_head(x_pooled)  # (batch_size, 1)
+        output = self.output_head(x_pooled)
         
         return output
     
+    def get_num_parameters(self) -> int:
+        """Get the total number of trainable parameters."""
+        return sum(p.numel() for p in self.parameters() if p.requires_grad)
+    
     def get_model_info(self) -> str:
         """Get a summary of the model architecture."""
-        info_lines = [
+        info = [
             "=" * 60,
             "Convolutional Neural Network (CNN) Surrogate Model",
             "=" * 60,
-            f"Input features: {self.num_input_features}",
-            f"Expansion size: {self.expansion_size}x{self.expansion_size} = {self.expansion_size**2}",
-            f"Number of conv layers: {self.num_conv_layers}",
+            f"Input features: {self.input_dim}",
+            f"Expansion size: {self.expansion_size}x{self.expansion_size}",
+            f"Number of conv layers: {self.num_layers}",
             f"Channel progression: {self.conv_channels}",
             f"Batch normalization: {self.use_batch_norm}",
             f"Residual connections: {self.use_residual}",
             f"Dropout rate: {self.dropout_rate}",
             f"Output dimension: {self.output_dim}",
-            f"Total parameters: {sum(p.numel() for p in self.parameters()):,}",
+            f"Total parameters: {self.get_num_parameters():,}",
             "=" * 60,
         ]
-        return "\n".join(info_lines)
+        return "\n".join(info)
 
 
-class MultiScaleConvolutionalSurrogate(nn.Module):
-    """Advanced CNN with multi-scale convolutions.
+class MultiScaleCNN(nn.Module):
+    """Advanced CNN with multi-scale convolutions (Inception-style).
     
     Uses multiple parallel convolutional branches with different kernel sizes
-    to capture features at different scales, similar to Inception modules.
+    to capture features at different scales simultaneously.
+    
+    Architecture:
+    1. Expand features to spatial grid
+    2. Apply parallel branches with kernel sizes 3, 5, 7, ...
+    3. Each branch: Conv -> BN -> SiLU -> Conv -> BN -> SiLU -> Pool
+    4. Concatenate branch outputs
+    5. Fully connected output head
     """
     
     def __init__(
         self,
-        num_input_features: int = 4,
-        expansion_size: int = 8,
+        input_dim: int = 4,
+        output_dim: int = 1,
+        expansion_size: int = 16,
         num_scales: int = 3,
         base_channels: int = 16,
         dropout_rate: float = 0.2,
-        output_dim: int = 1,
     ):
         """Initialize multi-scale CNN.
         
         Args:
-            num_input_features: Number of input features (4)
-            expansion_size: Size of expanded grid (e.g., 8 = 8x8)
+            input_dim: Number of input features (default: 4)
+            output_dim: Output dimension (default: 1)
+            expansion_size: Size of expanded grid (e.g., 16 = 16x16)
             num_scales: Number of parallel convolutional branches
             base_channels: Number of channels for each scale branch
             dropout_rate: Dropout rate
-            output_dim: Output dimension
         """
         super().__init__()
+        
+        self.input_dim = input_dim
+        self.output_dim = output_dim
+        self.expansion_size = expansion_size
+        self.num_scales = num_scales
+        self.base_channels = base_channels
+        self.dropout_rate = dropout_rate
         
         expanded_size = expansion_size * expansion_size
         
         # Feature expansion
         self.expand = nn.Sequential(
-            nn.Linear(num_input_features, expanded_size),
+            nn.Linear(input_dim, expanded_size),
             nn.BatchNorm1d(expanded_size),
             nn.SiLU(),
         )
         
         # Multi-scale convolutional branches
         self.branches = nn.ModuleList()
-        self.expansion_size = expansion_size
         
         for scale in range(num_scales):
             kernel_size = 3 + 2 * scale  # 3, 5, 7, ...
@@ -251,10 +265,10 @@ class MultiScaleConvolutionalSurrogate(nn.Module):
         """Forward pass through multi-scale CNN.
         
         Args:
-            x: Input tensor of shape (batch_size, 4)
+            x: Input tensor of shape (batch_size, input_dim)
         
         Returns:
-            Output tensor of shape (batch_size, 1)
+            Output tensor of shape (batch_size, output_dim)
         """
         batch_size = x.shape[0]
         
@@ -277,16 +291,28 @@ class MultiScaleConvolutionalSurrogate(nn.Module):
         
         return output
     
+    def get_num_parameters(self) -> int:
+        """Get the total number of trainable parameters."""
+        return sum(p.numel() for p in self.parameters() if p.requires_grad)
+    
     def get_model_info(self) -> str:
         """Get a summary of the model architecture."""
-        info_lines = [
+        kernel_sizes = [3 + 2 * i for i in range(self.num_scales)]
+        info = [
             "=" * 60,
             "Multi-Scale CNN Surrogate Model (Inception-style)",
             "=" * 60,
-            f"Input features: 4",
+            f"Input features: {self.input_dim}",
             f"Expansion size: {self.expansion_size}x{self.expansion_size}",
-            f"Number of parallel scales: {len(self.branches)}",
-            f"Total parameters: {sum(p.numel() for p in self.parameters()):,}",
+            f"Number of parallel scales: {self.num_scales}",
+            f"Kernel sizes: {kernel_sizes}",
+            f"Base channels per branch: {self.base_channels}",
+            f"Dropout rate: {self.dropout_rate}",
+            f"Output dimension: {self.output_dim}",
+            f"Total parameters: {self.get_num_parameters():,}",
             "=" * 60,
         ]
-        return "\n".join(info_lines)
+        return "\n".join(info)
+
+
+__all__ = ["CNN", "MultiScaleCNN"]

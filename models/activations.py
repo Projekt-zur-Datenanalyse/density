@@ -1,4 +1,10 @@
-"""Activation functions and layer utilities."""
+"""
+Activation functions and layer building blocks.
+
+This module provides:
+- SwiGLU: GLU-variant activation function
+- MLPBlock: Configurable MLP block with optional SwiGLU/SiLU activation
+"""
 
 import torch
 import torch.nn as nn
@@ -66,7 +72,6 @@ class SwiGLU(nn.Module):
             gated = self.dropout(gated)
         
         return gated
-
 
 
 class MLPBlock(nn.Module):
@@ -177,3 +182,6 @@ class MLPBlock(nn.Module):
             x = x + residual
         
         return x
+
+
+__all__ = ["SwiGLU", "MLPBlock"]

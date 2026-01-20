@@ -1,4 +1,5 @@
-"""LightGBM-based surrogate model for chemical density prediction.
+"""
+LightGBM-based surrogate model for chemical density prediction.
 
 This module implements a LightGBM (Light Gradient Boosting Machine) model
 as an alternative to neural network architectures.
@@ -11,17 +12,20 @@ except ImportError:
     LIGHTGBM_AVAILABLE = False
 
 import numpy as np
-from typing import Optional, Tuple
+from typing import Optional
 import pickle
 from pathlib import Path
 import warnings
 
 
-class LightGBMSurrogate:
+class LightGBMModel:
     """LightGBM Regression Model for Chemical Density Surrogate.
     
     Wraps LightGBM's LGBMRegressor to provide a unified interface with other
-    model architectures (MLP, CNN, GNN) in the training pipeline.
+    model architectures (MLP, CNN) in the training pipeline.
+    
+    Note: This is NOT a PyTorch nn.Module. The training module handles
+    this difference transparently.
     """
     
     def __init__(
@@ -96,9 +100,8 @@ class LightGBMSurrogate:
         )
         
         self.is_fitted = False
-        self.input_dim = 4  # SigC, SigH, EpsC, EpsH
-        self.output_dim = 1  # Density prediction
-        # Feature names to avoid sklearn warnings
+        self.input_dim = 4
+        self.output_dim = 1
         self.feature_names = ['SigC', 'SigH', 'EpsC', 'EpsH']
     
     def fit(
@@ -107,7 +110,6 @@ class LightGBMSurrogate:
         y_train: np.ndarray,
         X_val: Optional[np.ndarray] = None,
         y_val: Optional[np.ndarray] = None,
-        eval_metric: Optional[str] = None,
         early_stopping_rounds: int = 50,
         verbose: bool = True,
     ) -> None:
@@ -116,13 +118,11 @@ class LightGBMSurrogate:
         Args:
             X_train: Training features of shape (n_train, 4)
             y_train: Training targets of shape (n_train,)
-            X_val: Validation features of shape (n_val, 4), optional
-            y_val: Validation targets of shape (n_val,), optional
-            eval_metric: Metric for evaluation (overrides config metric)
-            early_stopping_rounds: Stop training if no improvement for N rounds
+            X_val: Validation features (optional)
+            y_val: Validation targets (optional)
+            early_stopping_rounds: Stop if no improvement for N rounds
             verbose: Whether to print training progress
         """
-        # Ensure inputs are numpy arrays with correct shape
         X_train = np.asarray(X_train, dtype=np.float32)
         y_train = np.asarray(y_train, dtype=np.float32).ravel()
         
@@ -134,27 +134,23 @@ class LightGBMSurrogate:
             y_val = np.asarray(y_val, dtype=np.float32).ravel()
             eval_set = [(X_val, y_val)]
             
-            # Setup early stopping callback for LightGBM
             try:
                 from lightgbm import early_stopping
                 callbacks = [early_stopping(stopping_rounds=early_stopping_rounds)]
             except ImportError:
-                # Fallback if early_stopping callback not available
                 callbacks = None
         
-        # Fit the model with feature names to avoid sklearn warnings
         fit_kwargs = {
             'X': X_train,
             'y': y_train,
             'eval_set': eval_set,
-            'eval_metric': eval_metric or self.config['metric'],
+            'eval_metric': self.config['metric'],
         }
         
         if callbacks is not None:
             fit_kwargs['callbacks'] = callbacks
         
         self.model.fit(**fit_kwargs)
-        
         self.is_fitted = True
         
         if verbose:
@@ -178,7 +174,6 @@ class LightGBMSurrogate:
         
         X = np.asarray(X, dtype=np.float32)
         
-        # Suppress sklearn feature name warnings
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", UserWarning)
             predictions = self.model.predict(X)
@@ -198,15 +193,10 @@ class LightGBMSurrogate:
         return predictions.reshape(-1, 1)
     
     def save(self, filepath: str) -> None:
-        """Save the model to disk.
-        
-        Args:
-            filepath: Path to save the model
-        """
+        """Save the model to disk."""
         filepath = Path(filepath)
         filepath.parent.mkdir(parents=True, exist_ok=True)
         
-        # Save both the config and the fitted model
         checkpoint = {
             'config': self.config,
             'model': self.model,
@@ -215,63 +205,55 @@ class LightGBMSurrogate:
         
         with open(filepath, 'wb') as f:
             pickle.dump(checkpoint, f)
-        
-        print(f"[LightGBM] Model saved to {filepath}")
     
     @staticmethod
-    def load(filepath: str) -> 'LightGBMSurrogate':
-        """Load a saved model from disk.
-        
-        Args:
-            filepath: Path to the saved model
-        
-        Returns:
-            Loaded LightGBMSurrogate instance
-        """
+    def load(filepath: str) -> 'LightGBMModel':
+        """Load a saved model from disk."""
         with open(filepath, 'rb') as f:
             checkpoint = pickle.load(f)
         
-        # Create a new instance with the saved config
-        instance = LightGBMSurrogate(**checkpoint['config'])
+        instance = LightGBMModel(**checkpoint['config'])
         instance.model = checkpoint['model']
         instance.is_fitted = checkpoint['is_fitted']
         
-        print(f"[LightGBM] Model loaded from {filepath}")
         return instance
     
     def get_feature_importance(self) -> np.ndarray:
-        """Get feature importance scores.
-        
-        Returns:
-            Array of feature importance values
-        """
+        """Get feature importance scores."""
         if not self.is_fitted:
             raise RuntimeError("Model must be fitted to get feature importance")
-        
         return self.model.feature_importances_
     
+    def get_num_parameters(self) -> int:
+        """Get approximate model complexity (number of leaves)."""
+        if self.is_fitted:
+            return self.model.n_estimators * self.config['num_leaves']
+        return self.config['num_boost_round'] * self.config['num_leaves']
+    
     def get_model_info(self) -> str:
-        """Get detailed model information.
-        
-        Returns:
-            Formatted string with model details
-        """
-        info = f"""
-LightGBM Surrogate Model
-{'=' * 50}
-Input dimension: {self.input_dim}
-Output dimension: {self.output_dim}
-Fitted: {self.is_fitted}
-Configuration:
-"""
-        for key, value in self.config.items():
-            info += f"  {key}: {value}\n"
+        """Get detailed model information."""
+        info = [
+            "=" * 60,
+            "LightGBM Surrogate Model",
+            "=" * 60,
+            f"Input dimension: {self.input_dim}",
+            f"Output dimension: {self.output_dim}",
+            f"Fitted: {self.is_fitted}",
+            f"Boosting type: {self.config['boosting_type']}",
+            f"Num leaves: {self.config['num_leaves']}",
+            f"Learning rate: {self.config['learning_rate']}",
+            f"Num boost rounds: {self.config['num_boost_round']}",
+            f"Max depth: {self.config['max_depth']}",
+        ]
         
         if self.is_fitted:
-            info += f"Number of estimators: {self.model.n_estimators}\n"
-            info += f"Feature importance:\n"
-            feature_names = ['SigC', 'SigH', 'EpsC', 'EpsH']
-            for name, importance in zip(feature_names, self.get_feature_importance()):
-                info += f"  {name}: {importance:.4f}\n"
+            info.append(f"Actual estimators: {self.model.n_estimators}")
+            info.append("Feature importance:")
+            for name, importance in zip(self.feature_names, self.get_feature_importance()):
+                info.append(f"  {name}: {importance:.4f}")
         
-        return info
+        info.append("=" * 60)
+        return "\n".join(info)
+
+
+__all__ = ["LightGBMModel", "LIGHTGBM_AVAILABLE"]
