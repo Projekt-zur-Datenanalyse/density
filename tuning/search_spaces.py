@@ -68,7 +68,7 @@ class SearchSpace:
 
         return {
             "hidden_dims": hidden_dims,
-            "use_swiglu": trial.suggest_categorical("use_swiglu", [True, False]),
+            "activation": trial.suggest_categorical("activation", ["relu", "silu", "leakyrelu", "swiglu"]),
             "learning_rate": trial.suggest_float("learning_rate", 1e-4, 5e-3, log=True),
             "batch_size": trial.suggest_categorical("batch_size", [32, 64, 128]),
             "dropout_rate": trial.suggest_float("dropout_rate", 0.0, 0.2),

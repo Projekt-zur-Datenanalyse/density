@@ -26,55 +26,52 @@ class SimpleTrainer:
     - Saving results and checkpoints
     
     Example:
-        trainer = SimpleTrainer(
+        config = TrainingConfig(
             architecture="mlp",
-            model_config={"hidden_dims": [256, 64, 32]},
-            training_config=TrainingConfig(num_epochs=100),
+            model_config={"hidden_dims": [16, 32, 8], "activation": "relu"},
         )
+        trainer = SimpleTrainer(config)
         results = trainer.run()
     """
     
     def __init__(
         self,
-        architecture: str,
-        model_config: Optional[Dict[str, Any]] = None,
-        training_config: Optional[TrainingConfig] = None,
-        tuned_config_dir: Optional[str] = None,
+        config: TrainingConfig,
+        verbose: bool = True,
     ):
         """Initialize the trainer.
         
         Args:
-            architecture: Model architecture (mlp, cnn, cnn_multiscale, lightgbm)
-            model_config: Model-specific configuration. Overridden by tuned_config if provided.
-            training_config: Training configuration. If None, uses defaults.
-            tuned_config_dir: Path to Optuna results directory to load tuned hyperparameters.
-                            If provided, model_config is ignored.
+            config: Training configuration including architecture and model settings
+            verbose: Whether to print progress messages
         """
-        if architecture not in AVAILABLE_ARCHITECTURES:
+        if config.architecture not in AVAILABLE_ARCHITECTURES:
             raise ValueError(
-                f"Unknown architecture '{architecture}'. "
+                f"Unknown architecture '{config.architecture}'. "
                 f"Available: {AVAILABLE_ARCHITECTURES}"
             )
         
-        self.architecture = architecture
-        self.training_config = training_config or TrainingConfig()
-        
-        # Load tuned config if specified
-        if tuned_config_dir:
-            self.model_config = self._load_tuned_config(tuned_config_dir)
-            self.using_tuned = True
-        else:
-            self.model_config = model_config or {}
-            self.using_tuned = False
+        self.config = config
+        self.verbose = verbose
         
         # State
         self.model = None
         self.trainer = None
         self.data_stats = None
         self.results = None
+        self.output_dir = None
+        self._using_tuned = False
     
-    def _load_tuned_config(self, config_dir: str) -> Dict[str, Any]:
-        """Load tuned hyperparameters from Optuna results."""
+    def load_tuned_config(self, config_dir: str, rank: int = 1) -> Dict[str, Any]:
+        """Load tuned hyperparameters from Optuna results.
+        
+        Args:
+            config_dir: Path to Optuna results directory
+            rank: Rank of config to load (1 = best)
+            
+        Returns:
+            Loaded hyperparameters dict
+        """
         config_path = Path(config_dir)
         
         # Try loading from metadata file
@@ -83,21 +80,40 @@ class SimpleTrainer:
             with open(metadata_file) as f:
                 metadata = json.load(f)
             
-            if metadata.get("configs"):
-                # Get best config (rank 1)
-                best_config = metadata["configs"][0]
-                print(f"Loaded tuned config from {config_dir}")
-                print(f"  Trial {best_config['trial_number']}, "
-                      f"Validation RMSE: {best_config['validation_value']:.6f}")
-                return best_config.get("params", {})
+            if metadata.get("configs") and len(metadata["configs"]) >= rank:
+                tuned = metadata["configs"][rank - 1]
+                if self.verbose:
+                    print(f"Loaded tuned config rank {rank} from {config_dir}")
+                    print(f"  Trial {tuned['trial_number']}, "
+                          f"Validation RMSE: {tuned['validation_value']:.6f}")
+                
+                # Merge tuned params into model_config
+                params = tuned.get("params", {})
+                self.config.model_config.update(params)
+                
+                # Update training params if present
+                if "learning_rate" in params:
+                    self.config.learning_rate = float(params["learning_rate"])
+                if "weight_decay" in params:
+                    self.config.weight_decay = float(params["weight_decay"])
+                if "batch_size" in params:
+                    self.config.batch_size = int(params["batch_size"])
+                
+                self._using_tuned = True
+                return params
         
         # Try loading from individual config file
-        config_file = config_path / "configs" / "config_rank_01.json"
+        config_file = config_path / "configs" / f"config_rank_{rank:02d}.json"
         if config_file.exists():
             with open(config_file) as f:
-                config = json.load(f)
-            print(f"Loaded tuned config from {config_file}")
-            return config.get("params", {})
+                config_data = json.load(f)
+            if self.verbose:
+                print(f"Loaded tuned config from {config_file}")
+            
+            params = config_data.get("params", {})
+            self.config.model_config.update(params)
+            self._using_tuned = True
+            return params
         
         raise FileNotFoundError(f"No tuned config found in {config_dir}")
     
@@ -107,7 +123,7 @@ class SimpleTrainer:
         Returns:
             Dictionary with training results and metrics
         """
-        config = self.training_config
+        config = self.config
         
         # Set seed for reproducibility
         set_seed(config.seed)
@@ -116,10 +132,12 @@ class SimpleTrainer:
         device = get_device(config.device)
         
         # Print header
-        self._print_header()
+        if self.verbose:
+            self._print_header()
         
         # Load data
-        print("\n[1/4] Loading data...")
+        if self.verbose:
+            print("\n[1/4] Loading data...")
         data_loader = DataLoader(config.data_path)
         train_loader, val_loader, test_loader, stats = data_loader.load(
             validation_split=config.validation_split,
@@ -130,20 +148,26 @@ class SimpleTrainer:
         )
         self.data_stats = stats
         
-        print(f"      Train: {stats['train_samples']} samples")
-        print(f"      Val:   {stats['val_samples']} samples")
-        print(f"      Test:  {stats['test_samples']} samples")
+        if self.verbose:
+            print(f"      Train: {stats['train_samples']} samples")
+            print(f"      Val:   {stats['val_samples']} samples")
+            print(f"      Test:  {stats['test_samples']} samples")
         
         # Create model
-        print("\n[2/4] Creating model...")
-        self.model = create_model(self.architecture, self.model_config)
-        print(get_model_info(self.model))
+        if self.verbose:
+            print("\n[2/4] Creating model...")
+        self.model = create_model(config.architecture, config.model_config)
+        if self.verbose:
+            print(f"      {self.model}")
         
-        # Create trainer
-        output_dir = Path(config.output_dir) / f"{self.architecture}_{datetime.now():%Y%m%d_%H%M%S}"
-        output_dir.mkdir(parents=True, exist_ok=True)
+        # Create output directory
+        if config.output_dir:
+            self.output_dir = Path(config.output_dir)
+        else:
+            self.output_dir = Path(f"results_training/{config.architecture}_{datetime.now():%Y%m%d_%H%M%S}")
+        self.output_dir.mkdir(parents=True, exist_ok=True)
         
-        checkpoint_dir = str(output_dir / "checkpoints") if config.save_checkpoints else None
+        checkpoint_dir = str(self.output_dir / "checkpoints") if config.save_checkpoints else None
         self.trainer = Trainer(
             model=self.model,
             device=str(device),
@@ -151,13 +175,14 @@ class SimpleTrainer:
         )
         
         # Train
-        print("\n[3/4] Training...")
+        if self.verbose:
+            print("\n[3/4] Training...")
         history = self.trainer.train(
             train_loader=train_loader,
             val_loader=val_loader,
             num_epochs=config.num_epochs,
-            learning_rate=self._get_learning_rate(),
-            weight_decay=self._get_weight_decay(),
+            learning_rate=config.learning_rate,
+            weight_decay=config.weight_decay,
             optimizer_name=config.optimizer,
             scheduler_name=config.scheduler,
             loss_fn=config.loss_fn,
@@ -166,55 +191,64 @@ class SimpleTrainer:
             verbose=config.verbose,
         )
         
-        # Test
-        print("\n[4/4] Evaluating on test set...")
+        # Test (with predictions for saving)
+        if self.verbose:
+            print("\n[4/4] Evaluating on test set...")
         target_std = stats['normalization']['target_std']
-        test_results = self.trainer.test(test_loader, target_std=target_std)
+        test_results = self.trainer.test(
+            test_loader, 
+            target_std=target_std, 
+            return_predictions=True
+        )
+        
+        # Extract predictions for separate saving
+        predictions = test_results.pop("predictions", None)
+        targets = test_results.pop("targets", None)
         
         # Compile results
         self.results = {
-            "architecture": self.architecture,
-            "using_tuned_config": self.using_tuned,
-            "model_config": self.model_config,
+            "architecture": config.architecture,
+            "using_tuned_config": self._using_tuned,
+            "model_config": config.model_config,
             "training_config": config.to_dict(),
             "data_stats": stats,
             "training_history": history,
             "test_results": test_results,
+            "test_rmse_denormalized": test_results.get("rmse_denormalized", 
+                                                        test_results["rmse_normalized"] * target_std),
             "best_val_loss": self.trainer.best_val_loss,
             "timestamp": datetime.now().isoformat(),
         }
         
+        # Store predictions for saving
+        self._predictions = predictions
+        self._targets = targets
+        
         # Save results
-        self._save_results(output_dir)
+        self._save_results(self.output_dir)
         
         # Print summary
-        self._print_summary()
+        if self.verbose:
+            self._print_summary()
         
         return self.results
     
-    def _get_learning_rate(self) -> float:
-        """Get learning rate from tuned config or training config."""
-        if self.using_tuned and "learning_rate" in self.model_config:
-            return float(self.model_config["learning_rate"])
-        return self.training_config.learning_rate
-    
-    def _get_weight_decay(self) -> float:
-        """Get weight decay from tuned config or training config."""
-        if self.using_tuned and "weight_decay" in self.model_config:
-            return float(self.model_config["weight_decay"])
-        return self.training_config.weight_decay
-    
     def _print_header(self):
         """Print training header."""
-        config = self.training_config
+        config = self.config
         print("\n" + "=" * 70)
         print("CHEMICAL DENSITY SURROGATE - TRAINING")
         print("=" * 70)
-        print(f"Architecture:  {self.architecture.upper()}")
-        print(f"Tuned Config:  {'Yes' if self.using_tuned else 'No'}")
+        print(f"Architecture:  {config.architecture.upper()}")
+        if config.architecture == "mlp":
+            dims = config.model_config.get("hidden_dims", [16, 32, 8])
+            act = config.model_config.get("activation", "relu")
+            print(f"Hidden Dims:   {dims}")
+            print(f"Activation:    {act}")
+        print(f"Tuned Config:  {'Yes' if self._using_tuned else 'No'}")
         print(f"Epochs:        {config.num_epochs}")
         print(f"Batch Size:    {config.batch_size}")
-        print(f"Learning Rate: {self._get_learning_rate()}")
+        print(f"Learning Rate: {config.learning_rate}")
         print(f"Optimizer:     {config.optimizer}")
         print(f"Scheduler:     {config.scheduler}")
         print(f"Seed:          {config.seed}")
@@ -226,21 +260,31 @@ class SimpleTrainer:
             return
         
         test = self.results['test_results']
+        stats = self.data_stats
+        
         print("\n" + "=" * 70)
         print("TRAINING COMPLETE")
         print("=" * 70)
-        print(f"Best Validation RMSE: {self.results['best_val_loss']:.6f}")
-        print(f"Test RMSE (normalized): {test['rmse_normalized']:.6f}")
+        print(f"Best Validation RMSE (normalized): {self.results['best_val_loss']:.6f}")
+        print(f"")
+        print(f"--- Denormalized Test Metrics (kg/m³) ---")
         if 'rmse_denormalized' in test:
-            print(f"Test RMSE (kg/m³):      {test['rmse_denormalized']:.2f}")
-            print(f"Test MAE  (kg/m³):      {test['mae_denormalized']:.2f}")
+            print(f"Test RMSE:                         {test['rmse_denormalized']:.2f}")
+            print(f"Test MAE:                          {test['mae_denormalized']:.2f}")
+        print(f"")
+        print(f"--- Normalized Test Metrics ---")
+        print(f"Test RMSE:                         {test['rmse_normalized']:.6f}")
+        print(f"Test MAE:                          {test['mae_normalized']:.6f}")
+        print(f"")
+        print(f"--- Normalization Stats ---")
+        print(f"Target Mean:                       {stats['normalization']['target_mean']:.2f} kg/m³")
+        print(f"Target Std:                        {stats['normalization']['target_std']:.2f} kg/m³")
         print("=" * 70 + "\n")
     
     def _save_results(self, output_dir: Path):
         """Save results to disk."""
         # Save complete results
         with open(output_dir / "results.json", 'w') as f:
-            # Convert numpy arrays to lists for JSON serialization
             results_json = self._prepare_for_json(self.results)
             json.dump(results_json, f, indent=2)
         
@@ -248,7 +292,27 @@ class SimpleTrainer:
         with open(output_dir / "normalization_stats.json", 'w') as f:
             json.dump(self.data_stats['normalization'], f, indent=2)
         
-        print(f"\nResults saved to: {output_dir}")
+        # Save model config
+        with open(output_dir / "model_config.json", 'w') as f:
+            json.dump(self.config.model_config, f, indent=2)
+        
+        # Save test results
+        with open(output_dir / "test_results.json", 'w') as f:
+            json.dump(self.results['test_results'], f, indent=2)
+        
+        # Save training history separately (for plotting)
+        with open(output_dir / "training_history.json", 'w') as f:
+            json.dump(self.results['training_history'], f, indent=2)
+        
+        # Save predictions (for analysis/plotting)
+        if self._predictions is not None and self._targets is not None:
+            torch.save({
+                "predictions": torch.from_numpy(self._predictions),
+                "targets": torch.from_numpy(self._targets),
+            }, output_dir / "predictions.pt")
+        
+        if self.verbose:
+            print(f"\nResults saved to: {output_dir}")
     
     def _prepare_for_json(self, obj):
         """Recursively convert numpy arrays to lists."""
@@ -265,29 +329,4 @@ class SimpleTrainer:
         return obj
 
 
-def find_latest_tuned_config(architecture: str) -> Optional[str]:
-    """Find the latest Optuna results directory for an architecture.
-    
-    Args:
-        architecture: Model architecture name
-        
-    Returns:
-        Path to latest results directory, or None if not found
-    """
-    import glob
-    
-    # Look for optuna results directories
-    pattern = f"optuna_results_{architecture}_*"
-    dirs = sorted(glob.glob(pattern), reverse=True)
-    
-    if dirs:
-        return dirs[0]
-    
-    # Also check in tuning/ subdirectory
-    pattern = f"tuning/results/{architecture}_*"
-    dirs = sorted(glob.glob(pattern), reverse=True)
-    
-    return dirs[0] if dirs else None
-
-
-__all__ = ["SimpleTrainer", "find_latest_tuned_config"]
+__all__ = ["SimpleTrainer"]

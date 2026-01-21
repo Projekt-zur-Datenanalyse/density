@@ -148,16 +148,19 @@ class Trainer:
             self.history['val_loss'].append(val_loss)
             self.history['learning_rate'].append(current_lr)
             
+            # Update best validation loss and save checkpoint
+            if val_loss < self.best_val_loss:
+                self.best_val_loss = val_loss
+                if save_best and self.checkpoint_dir:
+                    self._save_checkpoint(epoch + 1, is_best=True)
+            
             # Print progress
             if verbose >= 1:
                 msg = f"Epoch {epoch+1:3d}/{num_epochs} | "
                 msg += f"Train: {train_loss:.6f} | Val: {val_loss:.6f} | "
                 msg += f"LR: {current_lr:.2e}"
                 
-                if val_loss < self.best_val_loss:
-                    self.best_val_loss = val_loss
-                    if save_best and self.checkpoint_dir:
-                        self._save_checkpoint(epoch + 1, is_best=True)
+                if val_loss == self.best_val_loss:
                     msg += " *"
                 
                 print(msg)
@@ -177,10 +180,14 @@ class Trainer:
         scheduler,
         show_progress: bool,
     ) -> float:
-        """Train for one epoch."""
+        """Train for one epoch.
+        
+        Returns:
+            RMSE (root mean square error) computed on all training samples.
+        """
         self.model.train()
-        total_loss = 0.0
-        num_batches = 0
+        all_predictions = []
+        all_targets = []
         
         iterator = train_loader
         if show_progress and HAS_TQDM:
@@ -198,14 +205,19 @@ class Trainer:
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
             optimizer.step()
             
-            total_loss += loss.item()
-            num_batches += 1
+            # Store predictions for RMSE calculation
+            all_predictions.append(predictions.detach())
+            all_targets.append(targets)
             
             # Step OneCycleLR per batch
             if scheduler is not None and isinstance(scheduler, OneCycleLR):
                 scheduler.step()
         
-        return np.sqrt(total_loss / num_batches)  # Return RMSE
+        # Compute RMSE from all predictions
+        all_predictions = torch.cat(all_predictions)
+        all_targets = torch.cat(all_targets)
+        mse = torch.mean((all_predictions - all_targets) ** 2)
+        return torch.sqrt(mse).item()  # Return RMSE
     
     def _validate(self, val_loader: DataLoader, criterion) -> float:
         """Validate the model."""
@@ -232,15 +244,17 @@ class Trainer:
         self,
         test_loader: DataLoader,
         target_std: Optional[float] = None,
-    ) -> Dict[str, float]:
+        return_predictions: bool = False,
+    ) -> Dict[str, Any]:
         """Evaluate model on test set.
         
         Args:
             test_loader: Test data loader
             target_std: Target standard deviation for denormalization
+            return_predictions: Whether to include predictions in results
             
         Returns:
-            Dictionary with test metrics
+            Dictionary with test metrics (and optionally predictions)
         """
         if self.is_pytorch:
             self.model.eval()
@@ -284,6 +298,11 @@ class Trainer:
         if target_std is not None:
             results["rmse_denormalized"] = float(rmse * target_std)
             results["mae_denormalized"] = float(mae * target_std)
+        
+        # Include predictions if requested
+        if return_predictions:
+            results["predictions"] = predictions
+            results["targets"] = targets
         
         return results
     

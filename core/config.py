@@ -6,7 +6,7 @@ training parameters in a clean, validated way.
 """
 
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 
 @dataclass
@@ -14,10 +14,12 @@ class TrainingConfig:
     """Configuration for training experiments.
     
     This is a unified configuration class that works with all architectures.
-    Architecture-specific model parameters should be passed directly to
-    the model creation functions.
     
     Attributes:
+        # Architecture settings
+        architecture: Model architecture ("mlp", "cnn", "cnn_multiscale", "lightgbm")
+        model_config: Architecture-specific model parameters
+        
         # Data settings
         data_path: Path to the dataset CSV file
         validation_split: Fraction of data for validation
@@ -35,7 +37,7 @@ class TrainingConfig:
         loss_fn: Loss function ("mse" or "mae")
         
         # Device and reproducibility
-        device: Device to use ("cuda", "cpu", or "auto")
+        device: Device to use ("cuda", "cpu", "mps", or "auto")
         seed: Random seed for reproducibility
         
         # Output settings
@@ -46,6 +48,10 @@ class TrainingConfig:
         verbose: Verbosity level (0=silent, 1=progress, 2=detailed)
         show_progress_bar: Whether to show training progress bars
     """
+    # Architecture settings
+    architecture: str = "mlp"
+    model_config: Dict[str, Any] = field(default_factory=dict)
+    
     # Data settings
     data_path: str = "dataset.csv"
     validation_split: float = 0.15
@@ -69,10 +75,10 @@ class TrainingConfig:
     
     # Device and reproducibility
     device: str = "auto"
-    seed: int = 46
+    seed: int = 42
     
     # Output settings
-    output_dir: str = "results"
+    output_dir: Optional[str] = None
     save_checkpoints: bool = True
     
     # Display settings
@@ -81,6 +87,11 @@ class TrainingConfig:
     
     def __post_init__(self):
         """Validate configuration after initialization."""
+        # Validate architecture
+        valid_archs = ["mlp", "cnn", "cnn_multiscale", "lightgbm"]
+        if self.architecture not in valid_archs:
+            raise ValueError(f"architecture must be one of {valid_archs}")
+        
         # Validate splits
         if not 0 <= self.validation_split < 1:
             raise ValueError("validation_split must be between 0 and 1")
@@ -102,12 +113,14 @@ class TrainingConfig:
             raise ValueError("loss_fn must be 'mse' or 'mae'")
         
         # Validate device
-        if self.device not in ["auto", "cuda", "cpu"]:
-            raise ValueError("device must be 'auto', 'cuda', or 'cpu'")
+        if self.device not in ["auto", "cuda", "cpu", "mps"]:
+            raise ValueError("device must be 'auto', 'cuda', 'cpu', or 'mps'")
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert config to dictionary."""
         return {
+            "architecture": self.architecture,
+            "model_config": self.model_config,
             "data_path": self.data_path,
             "validation_split": self.validation_split,
             "test_split": self.test_split,

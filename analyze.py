@@ -39,7 +39,7 @@ Examples:
   python analyze.py data --path dataset.csv --report
   python analyze.py model --results-dir results_mlp/
   python analyze.py compare --dirs results_mlp results_cnn
-  python analyze.py ensemble --results-dir ensemble_results/
+  python analyze.py ensemble --results-dir results_ensemble/
         """,
     )
     

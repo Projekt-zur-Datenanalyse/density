@@ -56,7 +56,7 @@ class EnsembleTrainer:
         model_config: Optional[Dict[str, Any]] = None,
         training_config: Optional[TrainingConfig] = None,
         tuned_config_dir: Optional[str] = None,
-        output_dir: str = "ensemble_results",
+        output_dir: str = "results_ensemble",
         master_seed: int = 46,
     ):
         """Initialize the ensemble trainer.
@@ -204,8 +204,12 @@ class EnsembleTrainer:
             )
         
         # Store test data (same for all models)
+        # Note: y_test is raw (unnormalized), we normalize it for comparison
         if self.test_targets is None:
-            self.test_targets = y_test
+            target_mean = norm_stats['target_mean']
+            target_std = norm_stats['target_std']
+            # Normalize y_test to match model predictions
+            self.test_targets = (y_test - target_mean) / target_std
             self.norm_stats = norm_stats
         
         # Create model
@@ -317,25 +321,40 @@ class EnsembleTrainer:
         # Uncertainty analysis
         mean_uncertainty = np.mean(ensemble_std) * target_std
         
+        # Also compute normalized metrics for reference
+        ensemble_rmse_norm = np.sqrt(np.mean((ensemble_preds - targets) ** 2))
+        ensemble_mae_norm = np.mean(np.abs(ensemble_preds - targets))
+        
         results = {
             "n_models": len(self.models),
             "architectures": list(set(m['architecture'] for m in self.models)),
-            "ensemble_rmse_denorm": float(ensemble_rmse),
-            "ensemble_mae_denorm": float(ensemble_mae),
-            "mean_individual_rmse": float(np.mean(individual_rmses)),
-            "std_individual_rmse": float(np.std(individual_rmses)),
-            "mean_individual_mae": float(np.mean(individual_maes)),
-            "best_individual_rmse": float(np.min(individual_rmses)),
-            "worst_individual_rmse": float(np.max(individual_rmses)),
+            # Denormalized metrics (kg/m³)
+            "ensemble_rmse_denormalized": float(ensemble_rmse),
+            "ensemble_mae_denormalized": float(ensemble_mae),
+            "mean_individual_rmse_denormalized": float(np.mean(individual_rmses)),
+            "std_individual_rmse_denormalized": float(np.std(individual_rmses)),
+            "mean_individual_mae_denormalized": float(np.mean(individual_maes)),
+            "best_individual_rmse_denormalized": float(np.min(individual_rmses)),
+            "worst_individual_rmse_denormalized": float(np.max(individual_rmses)),
+            # Normalized metrics (for internal use)
+            "ensemble_rmse_normalized": float(ensemble_rmse_norm),
+            "ensemble_mae_normalized": float(ensemble_mae_norm),
+            # Uncertainty
             "mean_uncertainty": float(mean_uncertainty),
-            "individual_rmses": individual_rmses.tolist(),
-            "individual_maes": individual_maes.tolist(),
+            "mean_std": float(mean_uncertainty),  # Alias for backward compatibility
+            # Normalization stats used
+            "target_mean": float(target_mean),
+            "target_std": float(target_std),
+            # Individual model details
+            "individual_rmses_denormalized": individual_rmses.tolist(),
+            "individual_maes_denormalized": individual_maes.tolist(),
             "model_details": [
                 {
                     "architecture": m['architecture'],
                     "seed": m['seed'],
-                    "val_rmse": m['best_val_loss'],
-                    "test_rmse_denorm": m['test_results']['rmse_denormalized'],
+                    "val_rmse_normalized": m['best_val_loss'],
+                    "test_rmse_denormalized": m['test_results']['rmse_denormalized'],
+                    "test_mae_denormalized": m['test_results']['mae_denormalized'],
                 }
                 for m in self.models
             ],
@@ -436,7 +455,7 @@ class EnsembleTrainer:
         # Figure 2: Model comparison
         fig, ax = plt.subplots(figsize=(10, 6))
         
-        individual_rmses = self.results['individual_rmses']
+        individual_rmses = self.results['individual_rmses_denormalized']
         model_labels = [f"{m['architecture']}_{i+1}" 
                        for i, m in enumerate(self.models)]
         
@@ -444,9 +463,9 @@ class EnsembleTrainer:
                  for m in self.models]
         
         bars = ax.bar(range(len(individual_rmses)), individual_rmses, color=colors, alpha=0.7)
-        ax.axhline(self.results['ensemble_rmse_denorm'], color='green', 
+        ax.axhline(self.results['ensemble_rmse_denormalized'], color='green', 
                   linestyle='--', linewidth=2, label='Ensemble RMSE')
-        ax.axhline(self.results['mean_individual_rmse'], color='orange',
+        ax.axhline(self.results['mean_individual_rmse_denormalized'], color='orange',
                   linestyle=':', linewidth=2, label='Mean Individual RMSE')
         
         ax.set_xticks(range(len(model_labels)))
@@ -480,20 +499,36 @@ class EnsembleTrainer:
         if not self.results:
             return
         
+        r = self.results
+        
         print(f"\n{'='*70}")
         print("ENSEMBLE RESULTS")
         print(f"{'='*70}")
-        print(f"Number of Models:        {self.results['n_models']}")
-        print(f"Ensemble RMSE:           {self.results['ensemble_rmse_denorm']:.2f} kg/m³")
-        print(f"Ensemble MAE:            {self.results['ensemble_mae_denorm']:.2f} kg/m³")
-        print(f"Mean Individual RMSE:    {self.results['mean_individual_rmse']:.2f} kg/m³")
-        print(f"Best Individual RMSE:    {self.results['best_individual_rmse']:.2f} kg/m³")
-        print(f"Mean Uncertainty:        {self.results['mean_uncertainty']:.2f} kg/m³")
+        print(f"Number of Models:          {r['n_models']}")
+        print(f"Architectures:             {r['architectures']}")
+        print(f"")
+        print(f"--- Denormalized Metrics (kg/m³) ---")
+        print(f"Ensemble RMSE:             {r['ensemble_rmse_denormalized']:.2f}")
+        print(f"Ensemble MAE:              {r['ensemble_mae_denormalized']:.2f}")
+        print(f"Mean Individual RMSE:      {r['mean_individual_rmse_denormalized']:.2f}")
+        print(f"Best Individual RMSE:      {r['best_individual_rmse_denormalized']:.2f}")
+        print(f"Worst Individual RMSE:     {r['worst_individual_rmse_denormalized']:.2f}")
+        print(f"Mean Uncertainty (std):    {r['mean_uncertainty']:.2f}")
+        print(f"")
+        print(f"--- Normalized Metrics ---")
+        print(f"Ensemble RMSE:             {r['ensemble_rmse_normalized']:.6f}")
+        print(f"Ensemble MAE:              {r['ensemble_mae_normalized']:.6f}")
+        print(f"")
+        print(f"--- Normalization Stats ---")
+        print(f"Target Mean:               {r['target_mean']:.2f} kg/m³")
+        print(f"Target Std:                {r['target_std']:.2f} kg/m³")
         
-        improvement = (self.results['mean_individual_rmse'] - 
-                      self.results['ensemble_rmse_denorm'])
+        improvement = (r['mean_individual_rmse_denormalized'] - 
+                      r['ensemble_rmse_denormalized'])
         if improvement > 0:
-            print(f"Ensemble Improvement:    {improvement:.2f} kg/m³ ({improvement/self.results['mean_individual_rmse']*100:.1f}%)")
+            pct = improvement / r['mean_individual_rmse_denormalized'] * 100
+            print(f"")
+            print(f"Ensemble Improvement:      {improvement:.2f} kg/m³ ({pct:.1f}%)")
         
         print("=" * 70 + "\n")
 

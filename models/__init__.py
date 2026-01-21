@@ -17,9 +17,9 @@ from typing import Dict, Any, List, Optional
 import torch.nn as nn
 
 # Import architectures
-from .mlp import MLP
+from .mlp import MLP, ACTIVATION_TYPES
 from .cnn import CNN, MultiScaleCNN
-from .activations import SwiGLU, MLPBlock
+from .activations import SwiGLU
 
 # LightGBM is optional
 try:
@@ -57,7 +57,7 @@ def create_model(
         
     Example:
         # Using kwargs directly
-        model = create_model("mlp", hidden_dims=[256, 128, 64])
+        model = create_model("mlp", hidden_dims=[16, 32, 8])
         
         # Using config dict
         model = create_model("cnn", config={"expansion_size": 8, "num_layers": 4})
@@ -69,10 +69,9 @@ def create_model(
         return MLP(
             input_dim=merged_config.get("input_dim", 4),
             output_dim=merged_config.get("output_dim", 1),
-            hidden_dims=merged_config.get("hidden_dims", [256, 64, 32]),
-            use_swiglu=merged_config.get("use_swiglu", False),
-            dropout_rate=merged_config.get("dropout_rate", 0.1),
-            use_prenorm=merged_config.get("use_prenorm", False),
+            hidden_dims=merged_config.get("hidden_dims", [16, 32, 8]),
+            activation=merged_config.get("activation", "relu"),
+            dropout_rate=merged_config.get("dropout_rate", 0.0),
         )
     
     elif architecture == "cnn":
@@ -146,6 +145,7 @@ __all__ = [
     "get_model_info",
     # Constants
     "AVAILABLE_ARCHITECTURES",
+    "ACTIVATION_TYPES",
     "LIGHTGBM_AVAILABLE",
     # Model classes
     "MLP",
@@ -154,5 +154,4 @@ __all__ = [
     "LightGBMModel",
     # Building blocks
     "SwiGLU",
-    "MLPBlock",
 ]

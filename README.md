@@ -57,7 +57,7 @@ python train_api.py --architecture mlp
 python train_api.py --architecture cnn --epochs 100 --batch-size 64
 
 # Train with tuned hyperparameters
-python train_api.py --architecture mlp --tuned-dir tuning_results/mlp_...
+python train_api.py --architecture mlp --tuned-dir results_tuning/mlp_...
 ```
 
 ### 2. Hyperparameter Tuning
@@ -83,7 +83,7 @@ python ensemble_api.py --architecture mlp --n-models 5
 python ensemble_api.py --architectures mlp cnn cnn_multiscale --n-models 2
 
 # Ensemble with tuned configs
-python ensemble_api.py --architecture mlp --tuned-dir tuning_results/mlp_...
+python ensemble_api.py --architecture mlp --tuned-dir results_tuning/mlp_...
 ```
 
 ### 4. Analyze Results
@@ -99,17 +99,17 @@ python analyze.py model --results-dir results_mlp/ --plot
 python analyze.py compare --dirs results_mlp results_cnn --plot
 
 # Analyze ensemble
-python analyze.py ensemble --results-dir ensemble_results/
+python analyze.py ensemble --results-dir results_ensemble/
 ```
 
 ## Supported Architectures
 
-| Architecture | Description | Parameters |
-|-------------|-------------|------------|
-| `mlp` | Multi-layer perceptron with SwiGLU/SiLU | `hidden_dims`, `use_swiglu`, `dropout_rate` |
-| `cnn` | 1D CNN with residual connections | `expansion_size`, `num_layers`, `kernel_size` |
-| `cnn_multiscale` | Multi-scale CNN (Inception-style) | `expansion_size`, `num_scales`, `base_channels` |
-| `lightgbm` | Gradient boosting machine | `num_leaves`, `learning_rate`, `num_boost_round` |
+| Architecture     | Description                             | Parameters                                       |
+| ---------------- | --------------------------------------- | ------------------------------------------------ |
+| `mlp`            | Multi-layer perceptron with SwiGLU/SiLU | `hidden_dims`, `use_swiglu`, `dropout_rate`      |
+| `cnn`            | 1D CNN with residual connections        | `expansion_size`, `num_layers`, `kernel_size`    |
+| `cnn_multiscale` | Multi-scale CNN (Inception-style)       | `expansion_size`, `num_scales`, `base_channels`  |
+| `lightgbm`       | Gradient boosting machine               | `num_leaves`, `learning_rate`, `num_boost_round` |
 
 ## Programmatic Usage
 

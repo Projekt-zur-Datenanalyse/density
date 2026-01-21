@@ -160,7 +160,7 @@ class HyperparameterTuner:
         # Create output directory
         if output_dir is None:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            output_dir = f"tuning_results/{architecture}_{timestamp}"
+            output_dir = f"results_tuning/{architecture}_{timestamp}"
         
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -284,14 +284,20 @@ class HyperparameterTuner:
         print(f"\n{'='*70}")
         print("OPTIMIZATION COMPLETE")
         print(f"{'='*70}")
-        print(f"Total Trials:   {len(study.trials)}")
-        print(f"Best Trial:     {best.number}")
-        print(f"Best Val RMSE:  {best.value:.6f}")
-        
+        print(f"Total Trials:      {len(study.trials)}")
+        print(f"Best Trial:        {best.number}")
+        print(f"")
+        print(f"--- Validation Metric (Normalized) ---")
+        print(f"Val RMSE:          {best.value:.6f}")
+        print(f"")
+        print(f"--- Test Metrics (Denormalized, kg/m³) ---")
         if 'test_rmse_denorm' in best.user_attrs:
-            print(f"Test RMSE:      {best.user_attrs['test_rmse_denorm']:.2f} kg/m³")
+            print(f"Test RMSE:         {best.user_attrs['test_rmse_denorm']:.2f}")
+        if 'test_mae_denorm' in best.user_attrs:
+            print(f"Test MAE:          {best.user_attrs['test_mae_denorm']:.2f}")
         
-        print(f"\nBest Hyperparameters:")
+        print(f"")
+        print(f"Best Hyperparameters:")
         for key, value in sorted(best.params.items()):
             print(f"  {key}: {value}")
         
@@ -310,7 +316,7 @@ def find_latest_results(architecture: str) -> Optional[Path]:
     import glob
     
     patterns = [
-        f"tuning_results/{architecture}_*",
+        f"results_tuning/{architecture}_*",
         f"optuna_results_{architecture}_*",
     ]
     
