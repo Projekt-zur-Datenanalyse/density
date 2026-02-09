@@ -57,6 +57,8 @@ numpy
 pandas
 matplotlib
 optuna
+seaborn
+scikit-learn  # optional, for LightGBM architecture
 lightgbm  # optional, for LightGBM architecture
 ```
 
