@@ -47,6 +47,26 @@ ChemicalDensity/
 
 ## Quick Start
 
+Virtual environment strongly recommended
+
+### Requirements
+
+```
+torch>=2.0
+numpy
+pandas
+matplotlib
+optuna
+lightgbm  # optional, for LightGBM architecture
+```
+
+With cuda 13.x (or your own version) installed run:
+```
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu130
+
+pip install pandas numpy matplotlib optuna seaborn scikit-learn lightgbm
+```
+
 ### 1. Train a Model
 
 ```bash
@@ -93,7 +113,7 @@ python ensemble_api.py --architecture mlp --tuned-dir results_tuning/mlp_...
 python analyze.py data --path dataset.csv --report
 
 # Analyze trained model
-python analyze.py model --results-dir results_mlp/ --plot
+python analyze.py model --results-dir results_training/mlp_20260209_190354 --plot
 
 # Compare models
 python analyze.py compare --dirs results_mlp results_cnn --plot
@@ -135,17 +155,6 @@ results = trainer.test(test_loader)
 # Analyze
 analyzer = DataAnalyzer('dataset.csv')
 summary = analyzer.get_summary()
-```
-
-## Requirements
-
-```
-torch>=2.0
-numpy
-pandas
-matplotlib
-optuna
-lightgbm  # optional, for LightGBM architecture
 ```
 
 ## Dataset

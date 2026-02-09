@@ -290,19 +290,19 @@ class SimpleTrainer:
         
         # Save normalization stats separately (useful for inference)
         with open(output_dir / "normalization_stats.json", 'w') as f:
-            json.dump(self.data_stats['normalization'], f, indent=2)
+            json.dump(self._prepare_for_json(self.data_stats['normalization']), f, indent=2)
         
         # Save model config
         with open(output_dir / "model_config.json", 'w') as f:
-            json.dump(self.config.model_config, f, indent=2)
+            json.dump(self._prepare_for_json(self.config.model_config), f, indent=2)
         
         # Save test results
         with open(output_dir / "test_results.json", 'w') as f:
-            json.dump(self.results['test_results'], f, indent=2)
+            json.dump(self._prepare_for_json(self.results['test_results']), f, indent=2)
         
         # Save training history separately (for plotting)
         with open(output_dir / "training_history.json", 'w') as f:
-            json.dump(self.results['training_history'], f, indent=2)
+            json.dump(self._prepare_for_json(self.results['training_history']), f, indent=2)
         
         # Save predictions (for analysis/plotting)
         if self._predictions is not None and self._targets is not None:
