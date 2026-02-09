@@ -151,6 +151,45 @@ class SearchSpace:
             # Batch processing (for data loader compatibility)
             "batch_size": trial.suggest_categorical("batch_size", [32, 64, 128, 256]),
         }
+
+    @staticmethod
+    def suggest_kan(trial: Trial) -> Dict[str, Any]:
+        """Suggest KAN hyperparameters."""
+        base_dim = trial.suggest_categorical("base_dim", [8, 16, 24])
+        num_layers = trial.suggest_int("num_layers", 1, 3)
+        hidden_dims = [base_dim] * num_layers
+
+        return {
+            "hidden_dims": hidden_dims,
+            "num_grids": trial.suggest_int("num_grids", 3, 10),
+            "base_activation": trial.suggest_categorical("base_activation", ["silu", "relu", "tanh"]),
+            "spline_weight_init_scale": trial.suggest_float("spline_weight_init_scale", 0.01, 0.2, log=True),
+            
+            # Training
+            "learning_rate": trial.suggest_float("learning_rate", 1e-4, 1e-2, log=True),
+            "batch_size": trial.suggest_categorical("batch_size", [32, 64]),
+        }
+
+    @staticmethod
+    def suggest_siren(trial: Trial) -> Dict[str, Any]:
+        """Suggest SIREN hyperparameters."""
+        base_dim = trial.suggest_categorical("base_dim", [32, 64, 128])
+        num_layers = trial.suggest_int("num_layers", 2, 5)
+        hidden_dims = [base_dim] * num_layers
+        
+        # SIREN works best with low omega for smooth functions
+        omega_0 = trial.suggest_float("omega_0", 1.0, 10.0) 
+
+        return {
+            "hidden_dims": hidden_dims,
+            "first_omega_0": omega_0,
+            "hidden_omega_0": omega_0,
+            
+            # Training: SIREN often needs lower learning rates
+            "learning_rate": trial.suggest_float("learning_rate", 1e-5, 1e-3, log=True),
+            "batch_size": trial.suggest_categorical("batch_size", [32, 64, 128]),
+            "lr_scheduler": "cosine",
+        }
     
     @staticmethod
     def get_suggest_function(architecture: str) -> Callable[[Trial], Dict[str, Any]]:
@@ -167,6 +206,8 @@ class SearchSpace:
             "cnn": SearchSpace.suggest_cnn,
             "cnn_multiscale": SearchSpace.suggest_cnn_multiscale,
             "lightgbm": SearchSpace.suggest_lightgbm,
+            "kan": SearchSpace.suggest_kan,
+            "siren": SearchSpace.suggest_siren,
         }
         
         if architecture not in functions:
@@ -230,6 +271,19 @@ class SearchSpace:
                 "colsample_bytree": 0.8,
                 "boosting_type": "gbdt",
                 "batch_size": 64,
+            },
+            "kan": {
+                "hidden_dims": [16, 16],
+                "num_grids": 5,
+                "learning_rate": 0.001,
+                "batch_size": 64,
+            },
+            "siren": {
+                "hidden_dims": [64, 64, 64],
+                "first_omega_0": 3.0,
+                "hidden_omega_0": 3.0,
+                "learning_rate": 1e-4,
+                "batch_size": 128,
             },
         }
         

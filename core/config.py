@@ -88,7 +88,7 @@ class TrainingConfig:
     def __post_init__(self):
         """Validate configuration after initialization."""
         # Validate architecture
-        valid_archs = ["mlp", "cnn", "cnn_multiscale", "lightgbm"]
+        valid_archs = ["mlp", "cnn", "cnn_multiscale", "lightgbm", "kan", "siren"]
         if self.architecture not in valid_archs:
             raise ValueError(f"architecture must be one of {valid_archs}")
         

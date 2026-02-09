@@ -130,6 +130,8 @@ python analyze.py ensemble --results-dir results_ensemble/
 | `cnn`            | 1D CNN with residual connections        | `expansion_size`, `num_layers`, `kernel_size`    |
 | `cnn_multiscale` | Multi-scale CNN (Inception-style)       | `expansion_size`, `num_scales`, `base_channels`  |
 | `lightgbm`       | Gradient boosting machine               | `num_leaves`, `learning_rate`, `num_boost_round` |
+| `kan`            | Kolmogorov-Arnold Network               | `hidden_dims`, `num_grids`, `base_activation`    |
+| `siren`          | Sinusoidal Representation Network       | `hidden_dims`, `first_omega_0`, `hidden_omega_0` |
 
 ## Programmatic Usage
 
@@ -156,6 +158,16 @@ results = trainer.test(test_loader)
 analyzer = DataAnalyzer('dataset.csv')
 summary = analyzer.get_summary()
 ```
+
+## Additional Notes
+
+- **KAN (Kolmogorov-Arnold Network)**: This architecture is partially integrated and requires the `fast-kan` package. Install it as follows:
+  ```bash
+  git clone https://github.com/ZiyaoLi/fast-kan
+  cd fast-kan
+  pip install .
+  ```
+- **SIREN (Sinusoidal Representation Network)**: Uses sinusoidal activation functions. It is highly sensitive to the `omega_0` parameter; low values (e.g., 3.0-5.0) are recommended for this dataset.
 
 ## Dataset
 

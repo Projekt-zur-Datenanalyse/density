@@ -20,6 +20,8 @@ import torch.nn as nn
 from .mlp import MLP, ACTIVATION_TYPES
 from .cnn import CNN, MultiScaleCNN
 from .activations import SwiGLU
+from .kan import KANRegressor
+from .siren import SIREN
 
 # LightGBM is optional
 try:
@@ -33,6 +35,8 @@ except ImportError:
 AVAILABLE_ARCHITECTURES = ["mlp", "cnn", "cnn_multiscale"]
 if LIGHTGBM_AVAILABLE:
     AVAILABLE_ARCHITECTURES.append("lightgbm")
+
+AVAILABLE_ARCHITECTURES.extend(["kan", "siren"])
 
 
 def create_model(
@@ -114,6 +118,30 @@ def create_model(
             boosting_type=merged_config.get("boosting_type", "gbdt"),
         )
     
+    elif architecture == "kan":
+        return KANRegressor(
+            input_dim=merged_config.get("input_dim", 4),
+            output_dim=merged_config.get("output_dim", 1),
+            hidden_dims=merged_config.get("hidden_dims", [16, 16]),
+            grid_min=merged_config.get("grid_min", -2.0),
+            grid_max=merged_config.get("grid_max", 2.0),
+            num_grids=merged_config.get("num_grids", 5),
+            use_base_update=merged_config.get("use_base_update", True),
+            base_activation=merged_config.get("base_activation", "silu"),
+            spline_weight_init_scale=merged_config.get("spline_weight_init_scale", 0.1),
+        )
+
+    elif architecture == "siren":
+        return SIREN(
+            input_dim=merged_config.get("input_dim", 4),
+            output_dim=merged_config.get("output_dim", 1),
+            hidden_dims=merged_config.get("hidden_dims", [64, 64, 64]),
+            first_omega_0=merged_config.get("first_omega_0", 3.0),
+            hidden_omega_0=merged_config.get("hidden_omega_0", 3.0),
+            use_bias=merged_config.get("use_bias", True),
+            outermost_linear=merged_config.get("outermost_linear", True),
+        )
+    
     else:
         raise ValueError(
             f"Unknown architecture '{architecture}'. "
@@ -154,4 +182,7 @@ __all__ = [
     "LightGBMModel",
     # Building blocks
     "SwiGLU",
+    # Experimental models
+    "KANRegressor",
+    "SIREN",
 ]
